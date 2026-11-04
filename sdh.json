@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "document_metadata": {
+    "project_name": "Plot-Aware Korean SDH Subtitle Generation Agent",
+    "version": "1.0.0",
+    "last_updated": "2026-11-04",
+    "purpose": "AI Session Handoff & Pipeline Architecture Specification",
+    "usage_instruction": "새로운 Gemini 세션을 시작할 때 이 JSON 파일을 업로드하고 '이 파이프라인 명세서를 기반으로 Phase X의 Python 코드를 작성해줘'라고 지시하십시오."
+  },
+  "system_prompt_injection": {
+    "role": "Senior Multimodal AI Engineer specializing in Video Understanding, Audio Processing, and LLM Agents",
+    "objective": "영화, 드라마, 애니메이션의 전체 줄거리와 진행 상황을 내부적으로 트래킹하면서, 화면 밖 화자(Off-screen Speaker)의 정체(이름)를 밝히고 배경 효과음(SFX)을 자연스러운 한국어 자막으로 묘사해주는 오프라인 일괄 처리(Batch Processing) SDH 자막 생성 파이프라인을 구축한다.",
+    "target_language": "Korean (한국어)",
+    "core_requirements": [
+      "입력 데이터: 타임스탬프와 익명 화자 ID(예: Speaker_01)가 포함된 한국어 대사 JSON 파일, 단일 믹스 오디오(.wav), 원본 비디오(.mp4).",
+      "줄거리 트래킹은 외부 출력용이 아닌, 화자 이름 추론 및 효과음 문맥 정제를 위한 내부 컨텍스트(Internal State)로만 사용한다.",
+      "모든 모델은 외부 유료 API 없이 Colab Pro(A100 40GB) 환경에서 구동 가능한 오픈소스 모델만 사용한다."
+    ]
+  },
+  "hardware_and_memory_rules": {
+    "target_environment": "Google Colab Pro (NVIDIA A100-SXM4-40GB VRAM, ~83GB System RAM)",
+    "execution_paradigm": "Strict Sequential Processing (단계별 순차 실행 및 디스크 체크포인팅)",
+    "memory_management_protocol": [
+      "RULE 1: 절대 두 개 이상의 무거운 딥러닝 모델(예: Demucs와 Qwen2-Audio, 또는 Light-ASD와 LLM)을 동시에 GPU VRAM에 올리지 않는다.",
+      "RULE 2: 각 Phase는 독립된 Python 모듈/함수로 작성하며, Phase가 종료되면 결과물을 반드시 로컬 디스크에 JSON 또는 오디오 파일로 직렬화(Save)한다.",
+      "RULE 3: 각 Phase 종료 시점에 명시적으로 `del model`, `gc.collect()`, `torch.cuda.empty_cache()`를 호출하여 VRAM을 0GB에 가깝게 비운 뒤 다음 Phase로 진입한다.",
+      "RULE 4: 2시간 이상의 장편 영상 처리 시 System RAM 초과를 막기 위해, 비디오 프레임은 전체를 메모리에 로드하지 않고 씬(Scene) 또는 대사 타임스탬프 구간별로 OpenCV/Decord를 통해 온디맨드(On-demand) 추출한다."
+    ]
+  },
+  "genre_adaptation_strategy": {
+    "active_profile": "live_action_movie",
+    "profiles": {
+      "live_action_movie": {
+        "description": "실사 영화 및 드라마 (1차 타깃)",
+        "face_detector": "RetinaFace / InsightFace (buffalo_l)",
+        "asd_model": "Light-ASD (CVPR 2023) pretrained on AVA-ActiveSpeaker",
+        "asd_threshold": 0.5,
+        "scene_segmentation_sensitivity": "standard"
+      },
+      "animation": {
+        "description": "2D/3D 애니메이션 (향후 확장 타깃 - 실사용 ASD 모델 작동 불가 한계 반영)",
+        "face_detector": "YOLOv8-AnimeFace",
+        "asd_model": "Lip-Flap Optical Flow Heuristic + DINOv2 Character Clustering (또는 전 구간 VLM 폴백)",
+        "asd_threshold": 0.35,
+        "scene_segmentation_sensitivity": "high (빠른 컷 전환 반영)"
+      }
+    }
+  },
+  "pipeline_phases": [
+    {
+      "phase_id": "Phase_0_Input",
+      "phase_name": "User Provided Inputs (초기 입력 데이터)",
+      "description": "사용자가 파이프라인에 제공하는 원본 비디오, 단일 믹스 오디오, 그리고 사전 추출된 대사 JSON 파일.",
+      "file_paths": {
+        "video_file": "/content/workspace/input/movie.mp4",
+        "audio_file": "/content/workspace/input/movie_mix.wav",
+        "dialogue_json": "/content/workspace/input/raw_dialogue.json"
+      },
+      "schema_example": {
+        "video_id": "movie_sample_01",
+        "language": "ko",
+        "utterances": [
+          {
+            "utt_id": "u_0001",
+            "start_sec": 12.40,
+            "end_sec": 14.80,
+            "speaker_label": "SPEAKER_01",
+            "text": "지훈 선배! 거기 서 봐요, 할 말이 있어요."
+          },
+          {
+            "utt_id": "u_0002",
+            "start_sec": 15.50,
+            "end_sec": 17.20,
+            "speaker_label": "SPEAKER_02",
+            "text": "지금은 바쁘니까 나중에 얘기하자, 수진아."
+          }
+        ]
+      }
+    },
+    {
+      "phase_id": "Phase_1_Preprocessing",
+      "phase_name": "Scene Segmentation & Audio Source Separation (씬 분할 및 음원 분리)",
+      "models_used": [
+        {
+          "task": "Shot & Scene Boundary Detection",
+          "model_name": "TransNetV2 + BaSSL (or PySceneDetect fallback)",
+          "vram_estimate_gb": 4.5
+        },
+        {
+          "task": "Audio Stem Separation",
+          "model_name": "Hybrid Demucs (htdemucs)",
+          "vram_estimate_gb": 6.0
+        }
+      ],
+      "processing_logic": [
+        "1. 비디오에서 샷 경계를 검출한 뒤 의미적 유사성을 기반으로 씬(Scene) 단위 타임스탬프 구간을 생성한다.",
+        "2. movie_mix.wav를 Hybrid Demucs에 통과시켜 vocals(대사), drums/bass/other(배경음악 및 효과음)를 분리한 뒤, 대사와 음악 성분을 억제한 순수 효과음 트랙(sfx_only.wav)을 생성한다.",
+        "3. 대사 JSON의 각 utterance가 어느 scene_id에 속하는지 매핑한다."
+      ],
+      "output_files": {
+        "scenes_json": "/content/workspace/intermediate/phase1_scenes.json",
+        "sfx_wav": "/content/workspace/intermediate/sfx_only.wav"
+      },
+      "output_schema_example": {
+        "scenes": [
+          {
+            "scene_id": "sc_001",
+            "start_sec": 0.00,
+            "end_sec": 45.20,
+            "utterance_ids": ["u_0001", "u_0002"]
+          }
+        ],
+        "separated_audio_tracks": {
+          "vocals_wav": "/content/workspace/intermediate/vocals.wav",
+          "sfx_only_wav": "/content/workspace/intermediate/sfx_only.wav"
+        }
+      }
+    },
+    {
+      "phase_id": "Phase_2_Visual_Speaker_Tracking",
+      "phase_name": "Active Speaker Detection & Off-Screen Determination (시각적 화자 추적 및 온/오프스크린 판별)",
+      "models_used": [
+        {
+          "task": "Face Detection & Visual Clustering",
+          "model_name": "RetinaFace + ArcFace (InsightFace)",
+          "vram_estimate_gb": 3.0
+        },
+        {
+          "task": "Active Speaker Detection (ASD)",
+          "model_name": "Light-ASD",
+          "vram_estimate_gb": 5.5
+        }
+      ],
+      "processing_logic": [
+        "1. raw_dialogue.json의 각 대사 구간(start_sec ~ end_sec)에 해당하는 비디오 프레임과 오디오 조각을 추출한다.",
+        "2. 프레임 내 모든 인물의 얼굴 바운딩 박스를 찾고, Light-ASD를 통해 각 얼굴 트랙의 발화 점수(asd_score: 0.0~1.0)를 계산한다.",
+        "3. 판별 규칙: 대사 구간 동안 화면 내 어떤 얼굴도 탐지되지 않거나(num_faces == 0), 탐지된 모든 얼굴의 max(asd_score) < 0.5 인 경우 `is_offscreen = true`로 설정한다.",
+        "4. `is_offscreen == false`인 경우, 발화 중인 얼굴의 임베딩 클러스터 ID(`face_cluster_id`)를 기록하여 동일한 얼굴이 반복 등장할 때 LLM이 동일 인물로 인식하도록 돕는다."
+      ],
+      "output_files": {
+        "visual_tracking_json": "/content/workspace/intermediate/phase2_visual_tracking.json"
+      },
+      "output_schema_example": {
+        "utterances_visual": [
+          {
+            "utt_id": "u_0001",
+            "start_sec": 12.40,
+            "end_sec": 14.80,
+            "speaker_label": "SPEAKER_01",
+            "text": "지훈 선배! 거기 서 봐요, 할 말이 있어요.",
+            "visual_analysis": {
+              "detected_faces_count": 1,
+              "max_asd_score": 0.12,
+              "active_face_cluster_id": null,
+              "visible_face_clusters": ["FACE_02"],
+              "is_offscreen": true,
+              "offscreen_reason": "Person in frame (FACE_02) has closed mouth; voice comes from outside camera view."
+            }
+          },
+          {
+            "utt_id": "u_0002",
+            "start_sec": 15.50,
+            "end_sec": 17.20,
+            "speaker_label": "SPEAKER_02",
+            "text": "지금은 바쁘니까 나중에 얘기하자, 수진아.",
+            "visual_analysis": {
+              "detected_faces_count": 1,
+              "max_asd_score": 0.89,
+              "active_face_cluster_id": "FACE_02",
+              "visible_face_clusters": ["FACE_02"],
+              "is_offscreen": false,
+              "offscreen_reason": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "phase_id": "Phase_3_SFX_Captioning",
+      "phase_name": "Acoustic Event Detection & Free-form Audio Captioning (효과음 구간 탐지 및 자유 묘사)",
+      "models_used": [
+        {
+          "task": "Audio Event Energy Filtering",
+          "model_name": "Librosa RMS Energy / Silero VAD (역방향 적용)",
+          "vram_estimate_gb": 0.5
+        },
+        {
+          "task": "Open-ended Audio Captioning",
+          "model_name": "Qwen2-Audio-7B-Instruct (4-bit or BF16)",
+          "vram_estimate_gb": 16.5
+        }
+      ],
+      "processing_logic": [
+        "1. Phase 1에서 분리된 sfx_only.wav에서 RMS 에너지가 임계치(-35dB 등)를 초과하는 비묵음 이벤트 구간(최소 0.5초 이상)을 추출한다.",
+        "2. 추출된 오디오 클립을 Qwen2-Audio-7B-Instruct에 입력하고, 프롬프트('이 오디오 클립에서 들리는 물리적 효과음이나 환경음을 구체적으로 묘사하시오. 배경음악은 무시하시오.')를 통해 1차 캡션을 생성한다.",
+        "3. Demucs 잔여 노이즈(배경음악 드럼 비트 등)가 효과음으로 오인된 경우를 걸러내기 위해, 모델 출력에 'music', 'beat', 'melody', '배경음악' 등이 포함되면 해당 이벤트를 폐기한다."
+      ],
+      "output_files": {
+        "sfx_raw_json": "/content/workspace/intermediate/phase3_sfx_captions.json"
+      },
+      "output_schema_example": {
+        "sfx_events": [
+          {
+            "sfx_id": "sfx_001",
+            "scene_id": "sc_001",
+            "start_sec": 10.10,
+            "end_sec": 11.80,
+            "rms_db": -22.4,
+            "raw_audio_caption": "빠르게 뛰어오는 구두 발자국 소리가 복도에 울린다.",
+            "confidence": "high"
+          },
+          {
+            "sfx_id": "sfx_002",
+            "scene_id": "sc_001",
+            "start_sec": 17.50,
+            "end_sec": 18.90,
+            "rms_db": -18.1,
+            "raw_audio_caption": "무거운 철문이 강하게 닫히며 쿵 소리가 난다.",
+            "confidence": "high"
+          }
+        ]
+      }
+    },
+    {
+      "phase_id": "Phase_4_Plot_Tracking_and_SDH_Synthesis",
+      "phase_name": "LLM Plot Tracking, 2-Pass Character Naming & SDH Subtitle Synthesis (줄거리 트래킹, 인물 이름 매핑 및 최종 자막 생성)",
+      "models_used": [
+        {
+          "task": "Contextual Reasoning, Character Mapping & Subtitle Formatting",
+          "model_name": "Qwen2.5-14B-Instruct-AWQ (or Llama-3.1-Korean-8B-Instruct Q8)",
+          "vram_estimate_gb": 12.0
+        }
+      ],
+      "processing_logic": [
+        "1. [Pass 1 - 씬 단위 순차 줄거리 트래킹 및 캐릭터 사전 구축]: Scene 1부터 마지막 Scene까지 슬라이딩 윈도우 방식으로 순회한다.",
+        "2. 각 Scene마다 [이전 씬까지의 누적 줄거리 요약(rolling_plot_summary) + 현재 씬의 대사 목록 + 효과음 원본 캡션]을 LLM에 입력한다.",
+        "3. LLM은 대사 속 호칭(예: u_0001에서 SPEAKER_01이 상대방을 '지훈 선배'라 부르고, u_0002에서 SPEAKER_02가 상대방을 '수진아'라고 부름)을 단서로 `SPEAKER_01 = 수진`, `SPEAKER_02 = 지훈`임을 추론하여 전역 캐릭터 사전(Global Character Registry)을 업데이트한다.",
+        "4. 초반 씬에서 아직 이름이 밝혀지지 않은 화자는 임시 별칭(예: `남자 1`, `의문의 목소리`)을 부여한다.",
+        "5. [Pass 2 - 사후 일괄 역매핑 및 SDH 포맷팅]: 전체 씬 순회가 끝나고 완성된 전역 캐릭터 사전을 바탕으로, 극 초반부에 임시 별칭으로 남아있던 화자 태그를 확정된 이름(또는 스포일러 방지가 필요한 경우 극 중 역할명)으로 일괄 갱신하고, 효과음 캡션을 한국어 배리어프리 표준(대괄호 `[...]` 표기, 15자 이내 개조식 명사형 종결)으로 다듬어 최종 SRT/JSON을 출력한다."
+      ],
+      "output_files": {
+        "final_sdh_json": "/content/workspace/output/final_sdh_subtitles.json",
+        "final_srt_file": "/content/workspace/output/final_sdh_subtitles.srt"
+      },
+      "output_schema_example": {
+        "internal_context_state": {
+          "up_to_scene": "sc_001",
+          "rolling_plot_summary": "수진이 복도에서 급히 지훈을 불러 세워 대화를 시도하지만, 지훈은 바쁘다는 핑계로 대화를 거절하고 문을 닫고 나가버린다.",
+          "character_registry": {
+            "SPEAKER_01": {
+              "inferred_name": "수진",
+              "associated_face_cluster": "FACE_01",
+              "evidence_utt_id": "u_0002",
+              "confidence": 0.95
+            },
+            "SPEAKER_02": {
+              "inferred_name": "지훈",
+              "associated_face_cluster": "FACE_02",
+              "evidence_utt_id": "u_0001",
+              "confidence": 0.95
+            }
+          }
+        },
+        "final_sdh_subtitles": [
+          {
+            "sub_index": 1,
+            "start_time": "00:00:10,100",
+            "end_time": "00:00:11,800",
+            "type": "SFX",
+            "sdh_text": "[다급한 구두 발자국 소리]"
+          },
+          {
+            "sub_index": 2,
+            "start_time": "00:00:12,400",
+            "end_time": "00:00:14,800",
+            "type": "DIALOGUE_OFFSCREEN",
+            "sdh_text": "(수진) 지훈 선배! 거기 서 봐요, 할 말이 있어요."
+          },
+          {
+            "sub_index": 3,
+            "start_time": "00:00:15,500",
+            "end_time": "00:00:17,200",
+            "type": "DIALOGUE_ONSCREEN",
+            "sdh_text": "지금은 바쁘니까 나중에 얘기하자, 수진아."
+          },
+          {
+            "sub_index": 4,
+            "start_time": "00:00:17,500",
+            "end_time": "00:00:18,900",
+            "type": "SFX",
+            "sdh_text": "[철문이 쿵 닫히는 소리]"
+          }
+        ]
+      }
+    }
+  ]
+}
