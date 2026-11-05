@@ -1,0 +1,16 @@
+# 토큰 — 절대 올리지 않음
+.env
+*.env
+
+# 빌드 산출물·가상환경 (exe 는 build_exe.bat 로 다시 만듦)
+.venv-build/
+build/
+dist/
+*.spec
+build.log
+__pycache__/
+
+# 개인 실행 기록·번역 저장소
+cache/
+last_log.txt
+settings.json
