@@ -1,0 +1,1033 @@
+{
+ "items": [
+  {
+   "id": "P0001",
+   "kind": "speaker",
+   "t0": 0.9,
+   "t1": 3.2,
+   "onset": 0.9,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0001",
+    "name": "지아",
+    "face": "visible",
+    "n_faces": 1,
+    "asd": 0.86,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 0.9,
+     "t1": 1.9,
+     "text": "줄 시작 1초 안에 말하는 얼굴 보임",
+     "source": "asd",
+     "polarity": "exclude"
+    },
+    {
+     "kind": "대본",
+     "t": 0.9,
+     "t1": 3.2,
+     "text": "대본 화자: 지아",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "exclude",
+   "reason": "얼굴 보임 → 이름 생략",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "P0002",
+   "kind": "speaker",
+   "t0": 3.8,
+   "t1": 6.0,
+   "onset": 3.8,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0002",
+    "name": "민호",
+    "face": "unclear",
+    "n_faces": 2,
+    "asd": 0.41,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 3.8,
+     "t1": 4.8,
+     "text": "얼굴 2개 · 입 모양 판정 애매",
+     "source": "asd",
+     "polarity": "neutral"
+    },
+    {
+     "kind": "대본",
+     "t": 3.8,
+     "t1": 6.0,
+     "text": "대본 화자: 민호",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "check",
+   "reason": "얼굴 판정 애매",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "S0001",
+   "kind": "sfx",
+   "t0": 3.85,
+   "t1": 4.3,
+   "onset": 3.85,
+   "label": {
+    "class": "Click",
+    "ko": "딸깍",
+    "score": 0.58,
+    "path": [
+     "Click",
+     "Generic impact sounds"
+    ],
+    "top": [
+     {
+      "class": "Click",
+      "ko": "딸깍",
+      "score": 0.58
+     },
+     {
+      "class": "Tick",
+      "ko": "똑딱",
+      "score": 0.21
+     }
+    ],
+    "competing": [],
+    "unknown": false
+   },
+   "phrases": [
+    {
+     "text": "[딸깍, 스탠드 켜는 소리]",
+     "short": "[딸깍]",
+     "source": "caption",
+     "note": "소리 설명 모델 제안"
+    }
+   ],
+   "phrase": "[딸깍]",
+   "short": "[딸깍]",
+   "music": null,
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 3.8,
+     "t1": 4.4,
+     "text": "스탠드가 화면 밖 — 소리 낸 동작 안 보임",
+     "source": "vlm",
+     "polarity": "include"
+    },
+    {
+     "kind": "대사",
+     "t": 3.8,
+     "t1": 6.0,
+     "text": "민호가 말하며 불을 켬 (대본에 없음)",
+     "source": "llm",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "include",
+   "reason": "화면에 출처 없음 · 장면 밝기 변화",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "S0002",
+   "kind": "sfx",
+   "t0": 7.0,
+   "t1": 8.6,
+   "onset": 7.0,
+   "label": {
+    "class": "Telephone bell ringing",
+    "ko": "따르릉",
+    "score": 0.71,
+    "path": [
+     "Telephone bell ringing",
+     "Telephone",
+     "Alarm"
+    ],
+    "top": [
+     {
+      "class": "Telephone bell ringing",
+      "ko": "따르릉",
+      "score": 0.71
+     },
+     {
+      "class": "Bicycle bell",
+      "ko": "따릉",
+      "score": 0.18
+     }
+    ],
+    "competing": [],
+    "unknown": false
+   },
+   "phrases": [
+    {
+     "text": "[따르릉, 전화벨 소리]",
+     "short": "[따르릉]",
+     "source": "caption",
+     "note": "소리 설명 모델 제안"
+    }
+   ],
+   "phrase": "[따르릉, 전화벨 소리]",
+   "short": "[따르릉]",
+   "music": null,
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 7.0,
+     "t1": 8.6,
+     "text": "전화기 안 보임",
+     "source": "vlm",
+     "polarity": "include"
+    },
+    {
+     "kind": "대사",
+     "t": 9.2,
+     "t1": 11.6,
+     "text": "직후 '방금 무슨 소리 못 들었어요?'",
+     "source": "rule",
+     "polarity": "include"
+    },
+    {
+     "kind": "소리",
+     "t": 7.0,
+     "t1": 8.6,
+     "text": "효과음 트랙 +18dB 급상승",
+     "source": "sed",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "include",
+   "reason": "화면에 출처 없음 · 직후 대사 반응",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "P0003",
+   "kind": "speaker",
+   "t0": 9.2,
+   "t1": 11.6,
+   "onset": 9.2,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0003",
+    "name": "지아",
+    "face": "visible",
+    "n_faces": 1,
+    "asd": 0.9,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 9.2,
+     "t1": 10.2,
+     "text": "줄 시작 1초 안에 말하는 얼굴 보임",
+     "source": "asd",
+     "polarity": "exclude"
+    },
+    {
+     "kind": "대본",
+     "t": 9.2,
+     "t1": 11.6,
+     "text": "대본 화자: 지아",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "exclude",
+   "reason": "얼굴 보임 → 이름 생략",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "P0004",
+   "kind": "speaker",
+   "t0": 12.2,
+   "t1": 14.2,
+   "onset": 12.2,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0004",
+    "name": "민호",
+    "face": "visible",
+    "n_faces": 1,
+    "asd": 0.77,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 12.2,
+     "t1": 13.2,
+     "text": "줄 시작 1초 안에 말하는 얼굴 보임",
+     "source": "asd",
+     "polarity": "exclude"
+    },
+    {
+     "kind": "대본",
+     "t": 12.2,
+     "t1": 14.2,
+     "text": "대본 화자: 민호",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "exclude",
+   "reason": "얼굴 보임 → 이름 생략",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "M0001",
+   "kind": "music",
+   "t0": 14.8,
+   "t1": 24.2,
+   "onset": 14.8,
+   "label": {
+    "class": "Music",
+    "ko": "음악",
+    "score": 0.81
+   },
+   "phrases": [
+    {
+     "text": "♬ 무서운 음악",
+     "short": "♬ 음악",
+     "source": "mood",
+     "note": "분위기 1위"
+    }
+   ],
+   "phrase": "♬ 무서운 음악",
+   "short": "♬ 음악",
+   "music": {
+    "moods": [
+     {
+      "key": "Scary music",
+      "ko": "무서운",
+      "score": 0.62
+     },
+     {
+      "key": "Tender music",
+      "ko": "잔잔한",
+      "score": 0.14
+     },
+     {
+      "key": "Sad music",
+      "ko": "슬픈",
+      "score": 0.11
+     }
+    ],
+    "change": null,
+    "instruments": [
+     {
+      "key": "Cello",
+      "ko": "첼로 연주",
+      "score": 0.41
+     },
+     {
+      "key": "Synthesizer",
+      "ko": "신시사이저",
+      "score": 0.22
+     }
+    ],
+    "segment": [
+     14.8,
+     24.2
+    ],
+    "event": "start"
+   },
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "분위기",
+     "t": 14.8,
+     "t1": 24.2,
+     "text": "무서운 62% · 다른 분위기 기준 미달",
+     "source": "ast",
+     "polarity": "include"
+    }
+   ],
+   "rec": "include",
+   "reason": "음악 시작 · 분위기 확실",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "S0003",
+   "kind": "sfx",
+   "t0": 16.4,
+   "t1": 17.1,
+   "onset": 16.4,
+   "label": {
+    "class": "Thump, thud",
+    "ko": "쿵",
+    "score": 0.62,
+    "path": [
+     "Thump, thud",
+     "Generic impact sounds"
+    ],
+    "top": [
+     {
+      "class": "Thump, thud",
+      "ko": "쿵",
+      "score": 0.62
+     },
+     {
+      "class": "Slam",
+      "ko": "쾅",
+      "score": 0.27
+     }
+    ],
+    "competing": [
+     {
+      "class": "Slam",
+      "score": 0.27
+     }
+    ],
+    "unknown": false
+   },
+   "phrases": [
+    {
+     "text": "[쿵, 책 떨어지는 소리]",
+     "short": "[쿵]",
+     "source": "caption",
+     "note": "소리 설명 모델 제안"
+    }
+   ],
+   "phrase": "[쿵, 책 떨어지는 소리]",
+   "short": "[쿵]",
+   "music": null,
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 16.4,
+     "t1": 17.2,
+     "text": "소리 낸 동작 안 보임 (서가 뒤)",
+     "source": "vlm",
+     "polarity": "include"
+    },
+    {
+     "kind": "화면",
+     "t": 17.2,
+     "t1": 18.4,
+     "text": "지아가 고개를 돌림",
+     "source": "vlm",
+     "polarity": "include"
+    },
+    {
+     "kind": "대사",
+     "t": 18.6,
+     "t1": 20.4,
+     "text": "직후 비명",
+     "source": "rule",
+     "polarity": "include"
+    }
+   ],
+   "rec": "include",
+   "reason": "화면에 출처 없음 · 인물 반응 · 직후 비명",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "S0004",
+   "kind": "sfx",
+   "t0": 18.6,
+   "t1": 20.3,
+   "onset": 18.6,
+   "source_line": "L0005",
+   "label": {
+    "class": "Screaming",
+    "ko": "비명",
+    "score": 0.66,
+    "path": [
+     "Screaming",
+     "Human voice"
+    ],
+    "top": [
+     {
+      "class": "Screaming",
+      "ko": "비명",
+      "score": 0.66
+     }
+    ],
+    "competing": [],
+    "unknown": false
+   },
+   "phrases": [
+    {
+     "text": "[비명]",
+     "short": "[비명]",
+     "source": "label",
+     "note": "검출 종류"
+    }
+   ],
+   "phrase": "[비명]",
+   "short": "[비명]",
+   "music": null,
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "대본",
+     "t": 18.6,
+     "t1": 20.4,
+     "text": "대사에 '으아아악!'이 이미 적힘",
+     "source": "rule",
+     "polarity": "exclude"
+    }
+   ],
+   "rec": "exclude",
+   "reason": "대사에 같은 소리가 이미 적힘",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "P0005",
+   "kind": "speaker",
+   "t0": 18.6,
+   "t1": 20.4,
+   "onset": 18.6,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0005",
+    "name": "지아",
+    "face": "not_visible",
+    "n_faces": 1,
+    "asd": 0.05,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 18.6,
+     "t1": 19.6,
+     "text": "말하는 얼굴 안 보임 (화면 밖 목소리)",
+     "source": "asd",
+     "polarity": "include"
+    },
+    {
+     "kind": "대본",
+     "t": 18.6,
+     "t1": 20.4,
+     "text": "대본 화자: 지아",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "include",
+   "reason": "얼굴 안 보임 → 이름 표시",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "P0006",
+   "kind": "speaker",
+   "t0": 21.0,
+   "t1": 23.6,
+   "onset": 21.0,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0006",
+    "name": "민호",
+    "face": "visible",
+    "n_faces": 1,
+    "asd": 0.8,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 21.0,
+     "t1": 22.0,
+     "text": "줄 시작 1초 안에 말하는 얼굴 보임",
+     "source": "asd",
+     "polarity": "exclude"
+    },
+    {
+     "kind": "대본",
+     "t": 21.0,
+     "t1": 23.6,
+     "text": "대본 화자: 민호",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "exclude",
+   "reason": "얼굴 보임 → 이름 생략",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "S0005",
+   "kind": "sfx",
+   "t0": 24.6,
+   "t1": 26.8,
+   "onset": 24.6,
+   "label": {
+    "class": "Thunder",
+    "ko": "천둥",
+    "score": 0.38,
+    "path": [
+     "Thunder",
+     "Thunderstorm",
+     "Weather"
+    ],
+    "top": [
+     {
+      "class": "Thunder",
+      "ko": "천둥",
+      "score": 0.38
+     },
+     {
+      "class": "Rumble",
+      "ko": "우르릉",
+      "score": 0.31
+     },
+     {
+      "class": "Explosion",
+      "ko": "폭발",
+      "score": 0.12
+     }
+    ],
+    "competing": [
+     {
+      "class": "Rumble",
+      "score": 0.31
+     }
+    ],
+    "unknown": false
+   },
+   "phrases": [
+    {
+     "text": "[우르릉, 천둥 소리]",
+     "short": "[천둥]",
+     "source": "caption",
+     "note": "소리 설명 모델 제안"
+    },
+    {
+     "text": "[우르릉]",
+     "short": "[우르릉]",
+     "source": "label",
+     "note": "상위 종류"
+    }
+   ],
+   "phrase": "[우르릉, 천둥 소리]",
+   "short": "[천둥]",
+   "music": null,
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 24.5,
+     "t1": 25.0,
+     "text": "창밖 번개 — 출처가 보임?",
+     "source": "vlm",
+     "polarity": "exclude"
+    },
+    {
+     "kind": "소리",
+     "t": 24.6,
+     "t1": 26.8,
+     "text": "Thunder 0.38 · Rumble 0.31 경합",
+     "source": "sed",
+     "polarity": "neutral"
+    },
+    {
+     "kind": "에이전트",
+     "t": 24.6,
+     "t1": 26.8,
+     "text": "describe_sound: '먼 천둥, 낮게 울림'",
+     "source": "agent",
+     "polarity": "include"
+    }
+   ],
+   "rec": "check",
+   "reason": "종류 불확실 · 화면 근거 어긋남",
+   "flags": [
+    "label_uncertain"
+   ],
+   "agent": {
+    "status": "done",
+    "summary": "번개는 보이지만 천둥소리는 2초 늦게 이어짐. 장면 긴장 단서라 문구 확인 후 포함 권장.",
+    "tools": [
+     "look_frames",
+     "describe_sound",
+     "rescan_sound"
+    ]
+   }
+  },
+  {
+   "id": "P0007",
+   "kind": "speaker",
+   "t0": 27.4,
+   "t1": 30.0,
+   "onset": 27.4,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0007",
+    "name": "지아",
+    "face": "visible",
+    "n_faces": 1,
+    "asd": 0.88,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 27.4,
+     "t1": 28.4,
+     "text": "줄 시작 1초 안에 말하는 얼굴 보임",
+     "source": "asd",
+     "polarity": "exclude"
+    },
+    {
+     "kind": "대본",
+     "t": 27.4,
+     "t1": 30.0,
+     "text": "대본 화자: 지아",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "exclude",
+   "reason": "얼굴 보임 → 이름 생략",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "S0006",
+   "kind": "sfx",
+   "t0": 31.0,
+   "t1": 32.2,
+   "onset": 31.0,
+   "label": {
+    "class": "Creak",
+    "ko": "삐걱",
+    "score": 0.55,
+    "path": [
+     "Creak",
+     "Wood"
+    ],
+    "top": [
+     {
+      "class": "Creak",
+      "ko": "삐걱",
+      "score": 0.55
+     },
+     {
+      "class": "Door",
+      "ko": "문",
+      "score": 0.33
+     }
+    ],
+    "competing": [],
+    "unknown": false
+   },
+   "phrases": [
+    {
+     "text": "[삐걱, 위층 마룻바닥 소리]",
+     "short": "[삐걱]",
+     "source": "caption",
+     "note": "소리 설명 모델 제안"
+    }
+   ],
+   "phrase": "[삐걱, 위층 마룻바닥 소리]",
+   "short": "[삐걱]",
+   "music": null,
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 31.0,
+     "t1": 32.2,
+     "text": "천장만 보임 — 출처 안 보임",
+     "source": "vlm",
+     "polarity": "include"
+    },
+    {
+     "kind": "대사",
+     "t": 27.4,
+     "t1": 30.0,
+     "text": "직전 '위층에 있는 것 같아요' 언급",
+     "source": "llm",
+     "polarity": "include"
+    }
+   ],
+   "rec": "include",
+   "reason": "출처 안 보임 · 대사 언급 · 단서 소리",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "P0008",
+   "kind": "speaker",
+   "t0": 32.6,
+   "t1": 36.0,
+   "onset": 32.6,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0008",
+    "name": "민호",
+    "face": "not_visible",
+    "n_faces": 1,
+    "asd": 0.08,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 32.6,
+     "t1": 33.6,
+     "text": "말하는 얼굴 안 보임 (화면 밖 목소리)",
+     "source": "asd",
+     "polarity": "include"
+    },
+    {
+     "kind": "대본",
+     "t": 32.6,
+     "t1": 36.0,
+     "text": "대본 화자: 민호",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "include",
+   "reason": "얼굴 안 보임 → 이름 표시",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "S0007",
+   "kind": "sfx",
+   "t0": 34.2,
+   "t1": 34.9,
+   "onset": 34.2,
+   "label": {
+    "class": null,
+    "ko": "소리",
+    "score": 0.22,
+    "path": [],
+    "top": [
+     {
+      "class": "Sound effect",
+      "ko": "효과음",
+      "score": 0.22
+     }
+    ],
+    "competing": [],
+    "unknown": true
+   },
+   "phrases": [
+    {
+     "text": "[소리]",
+     "short": "[소리]",
+     "source": "label",
+     "note": "목록 밖 소리"
+    },
+    {
+     "text": "[덜컥, 문고리 소리]",
+     "short": "[덜컥]",
+     "source": "caption",
+     "note": "에이전트 제안"
+    }
+   ],
+   "phrase": "[소리]",
+   "short": "[소리]",
+   "music": null,
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "소리",
+     "t": 34.2,
+     "t1": 34.9,
+     "text": "효과음 트랙 급상승 · 종류 미정",
+     "source": "sed",
+     "polarity": "neutral"
+    },
+    {
+     "kind": "에이전트",
+     "t": 34.2,
+     "t1": 34.9,
+     "text": "look_frames: 문고리 클로즈업 없음",
+     "source": "agent",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "check",
+   "reason": "목록 밖 소리 · 대사 칸 중간",
+   "flags": [
+    "unknown_sound"
+   ],
+   "agent": {
+    "status": "done",
+    "summary": "'덜컥' 문고리 소리 가능성. 화면 근거 부족 → 확인 필요 유지.",
+    "tools": [
+     "look_frames",
+     "describe_sound"
+    ]
+   }
+  },
+  {
+   "id": "M0002",
+   "kind": "music",
+   "t0": 36.6,
+   "t1": 46.0,
+   "onset": 36.6,
+   "label": {
+    "class": "Music",
+    "ko": "음악",
+    "score": 0.74
+   },
+   "phrases": [
+    {
+     "text": "♬ 고조되는 음악",
+     "short": "♬ 음악",
+     "source": "mood",
+     "note": "변화"
+    }
+   ],
+   "phrase": "♬ 음악",
+   "short": "♬ 음악",
+   "music": {
+    "moods": [
+     {
+      "key": "Exciting music",
+      "ko": "긴장되는",
+      "score": 0.38
+     },
+     {
+      "key": "Sad music",
+      "ko": "슬픈",
+      "score": 0.34
+     },
+     {
+      "key": "Scary music",
+      "ko": "무서운",
+      "score": 0.16
+     }
+    ],
+    "change": "고조되는",
+    "instruments": [
+     {
+      "key": "Strings",
+      "ko": "현악기",
+      "score": 0.37
+     }
+    ],
+    "segment": [
+     36.6,
+     46.0
+    ],
+    "event": "mood_change"
+   },
+   "speaker": null,
+   "evidence": [
+    {
+     "kind": "분위기",
+     "t": 36.6,
+     "t1": 46.0,
+     "text": "긴장되는 38% ↔ 슬픈 34% 함께 기준 넘음",
+     "source": "ast",
+     "polarity": "neutral"
+    },
+    {
+     "kind": "변화",
+     "t": 36.4,
+     "t1": 37.2,
+     "text": "음악 트랙 세기 +9dB",
+     "source": "env",
+     "polarity": "include"
+    }
+   ],
+   "rec": "check",
+   "reason": "성격이 다른 분위기가 함께 기준을 넘음",
+   "flags": [],
+   "agent": null
+  },
+  {
+   "id": "P0009",
+   "kind": "speaker",
+   "t0": 40.2,
+   "t1": 42.0,
+   "onset": 40.2,
+   "label": null,
+   "phrases": [],
+   "phrase": null,
+   "short": null,
+   "music": null,
+   "speaker": {
+    "line_id": "L0009",
+    "name": "지아",
+    "face": "visible",
+    "n_faces": 1,
+    "asd": 0.83,
+    "name_revealed": true
+   },
+   "evidence": [
+    {
+     "kind": "화면",
+     "t": 40.2,
+     "t1": 41.2,
+     "text": "줄 시작 1초 안에 말하는 얼굴 보임",
+     "source": "asd",
+     "polarity": "exclude"
+    },
+    {
+     "kind": "대본",
+     "t": 40.2,
+     "t1": 42.0,
+     "text": "대본 화자: 지아",
+     "source": "script",
+     "polarity": "neutral"
+    }
+   ],
+   "rec": "exclude",
+   "reason": "얼굴 보임 → 이름 생략",
+   "flags": [],
+   "agent": null
+  }
+ ]
+}
