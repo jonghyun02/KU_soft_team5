@@ -1,0 +1,40 @@
+{"n": 0, "type": "front", "speaker": null, "scene_number": null, "note": "표지 제목"}
+{"n": 1, "type": "front", "speaker": null, "scene_number": null, "note": "표지 각본/감독"}
+{"n": 2, "type": "front", "speaker": null, "scene_number": null, "note": "표지 제작사"}
+{"n": 3, "type": "scene", "speaker": null, "scene_number": "1", "note": "1. 타이틀 백"}
+{"n": 4, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 5, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 6, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 7, "type": "transition", "speaker": null, "scene_number": null, "note": null}
+{"n": 8, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 9, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 10, "type": "transition", "speaker": null, "scene_number": null, "note": null}
+{"n": 11, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 12, "type": "transition", "speaker": null, "scene_number": null, "note": null}
+{"n": 13, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 14, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 15, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 16, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 17, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 18, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 19, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 20, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 21, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 22, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 23, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 24, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 25, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 26, "type": "dialogue", "speaker": "우연", "scene_number": null, "note": "괄호 화자 이름 (우연), 내레이션으로 보임"}
+{"n": 27, "type": "dialogue", "speaker": "우연", "scene_number": null, "note": null}
+{"n": 28, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 29, "type": "scene", "speaker": null, "scene_number": "2", "note": null}
+{"n": 30, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 31, "type": "dialogue", "speaker": "남중생1", "scene_number": null, "note": null}
+{"n": 32, "type": "dialogue", "speaker": "남중생1", "scene_number": null, "note": null}
+{"n": 33, "type": "dropped", "speaker": null, "scene_number": null, "note": "쪽번호"}
+{"n": 34, "type": "dialogue", "speaker": "우연", "scene_number": null, "note": null}
+{"n": 35, "type": "dialogue", "speaker": "우연", "scene_number": null, "note": null}
+{"n": 36, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 37, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 38, "type": "scene", "speaker": null, "scene_number": "3", "note": null}
+{"n": 39, "type": "action", "speaker": null, "scene_number": null, "note": null}

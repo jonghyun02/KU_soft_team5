@@ -1,0 +1,50 @@
+﻿level,doc_id,film_id,item_id,problem,score,detail,path
+doc,fm55645,local_0266,,extract_broken,0.4,"한컴이 열지 못하고 HWP3 직접 해석도 파일이 망가진 곳에서 멈춤(앞부분만 읽음, 레이아웃 없음): hancom_empty_pdf:pages=1,chars=0; hwp3_partial:ctrl24_mismatch@242602;read=0.40",filmmakers_scripts/한국영화 시나리오/_라이터를 켜라_ 시나리오 [55645].hwp
+doc,fm56897,local_0536,,extract_broken,0.911,"쪽 그림을 만들지 못함 11/123쪽: [2, 12, 16, 52, 57, 61, 70, 73, 95, 96, 122] (파일 k=0, filmmakers_scripts/외국영화 시나리오/No Country For Old Men (노인을 위한 나라는 없다) [56897].pdf)",cache/ocr/fm56897/0.json
+doc,fm2402467,local_0561,,parse_low_dialogue,0.6949,말 없는 대사(이름 줄만 잡힘) 227/744 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm2402467/script.json
+doc,fm4141439,local_0600,,parse_low_dialogue,0.8985,말 없는 대사(이름 줄만 잡힘) 27/266 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm4141439/script.json
+doc,fm4412879,local_0601,,parse_low_dialogue,0.8671,말 없는 대사(이름 줄만 잡힘) 149/1121 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm4412879/script.json
+doc,fm5280238,local_0603,,parse_low_dialogue,0.487,말 없는 대사(이름 줄만 잡힘) 414/807 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm5280238/script.json
+doc,fm54225,local_0024,,parse_low_dialogue,0.9,말 없는 대사(이름 줄만 잡힘) 50/500 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm54225/script.json
+doc,fm54288,local_0038,,parse_low_dialogue,0.0121,말 없는 대사(이름 줄만 잡힘) 490/496 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm54288/script.json
+doc,fm54448,local_0073,,parse_low_dialogue,0.0,대사 줄 비율이 낮음: dialogue_ratio 0.00 < 0.15,docs/fm54448/script.json
+doc,fm5486140,local_0604,,parse_low_dialogue,0.7437,말 없는 대사(이름 줄만 잡힘) 182/710 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm5486140/script.json
+doc,fm5503903,local_0608,,parse_low_dialogue,0.0,대사 줄 비율이 낮음: dialogue_ratio 0.00 < 0.15,docs/fm5503903/script.json
+doc,fm55169,local_0179,,parse_low_dialogue,0.8768,말 없는 대사(이름 줄만 잡힘) 69/560 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm55169/script.json
+doc,fm55381,local_0217,,parse_low_dialogue,0.8577,말 없는 대사(이름 줄만 잡힘) 140/984 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm55381/script.json
+doc,fm55565,local_0249,,parse_low_dialogue,0.8112,말 없는 대사(이름 줄만 잡힘) 71/376 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm55565/script.json
+doc,fm55568,local_0250,,parse_low_dialogue,0.8516,말 없는 대사(이름 줄만 잡힘) 104/701 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm55568/script.json
+doc,fm55630,local_0263,,parse_low_dialogue,0.0289,대사 줄 비율이 낮음: dialogue_ratio 0.03 < 0.15,docs/fm55630/script.json
+doc,fm55650,local_0267,,parse_low_dialogue,0.8889,말 없는 대사(이름 줄만 잡힘) 56/504 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm55650/script.json
+doc,fm55714,local_0276,,parse_low_dialogue,0.809,말 없는 대사(이름 줄만 잡힘) 162/848 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm55714/script.json
+doc,fm5587608,local_0609,,parse_low_dialogue,0.8732,말 없는 대사(이름 줄만 잡힘) 176/1388 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm5587608/script.json
+doc,fm55998,local_0323,,parse_low_dialogue,0.804,말 없는 대사(이름 줄만 잡힘) 108/551 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm55998/script.json
+doc,fm56040,local_0336,,parse_low_dialogue,0.0,대사 줄 비율이 낮음: dialogue_ratio 0.00 < 0.15,docs/fm56040/script.json
+doc,fm56165,local_0376,,parse_low_dialogue,0.7791,말 없는 대사(이름 줄만 잡힘) 184/833 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm56165/script.json
+doc,fm56452,local_0452,,parse_low_dialogue,0.844,말 없는 대사(이름 줄만 잡힘) 51/327 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm56452/script.json
+doc,fm56697,local_0495,,parse_low_dialogue,0.8724,말 없는 대사(이름 줄만 잡힘) 99/776 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm56697/script.json
+doc,fm56854,local_0530,,parse_low_dialogue,0.0324,대사 줄 비율이 낮음: dialogue_ratio 0.03 < 0.15,docs/fm56854/script.json
+doc,fm56910,local_0538,,parse_low_dialogue,0.0,대사 줄 비율이 낮음: dialogue_ratio 0.00 < 0.15,docs/fm56910/script.json
+doc,fm773767,local_0555,,parse_low_dialogue,0.8893,말 없는 대사(이름 줄만 잡힘) 55/497 >= 10%: 말이 지문으로 갔을 수 있음(대사 모양을 잘못 읽음),docs/fm773767/script.json
+doc,fm2334254,local_0558,,speaker_missing,0.8662,"앞 대사에서 이어받은 추정 화자 61/456 > 10%(speaker_inferred, 틀릴 수 있음)",docs/fm2334254/script.json
+doc,fm2334254,local_0558,,speaker_missing,0.5351,화자 없는 대사 244/456 > 5%,docs/fm2334254/script.json
+doc,fm54259_3,local_0031,,speaker_missing,0.0727,화자 없는 대사 16/220 > 5%,docs/fm54259_3/script.json
+doc,fm54259_4,local_0031,,speaker_missing,0.0526,화자 없는 대사 10/190 > 5%,docs/fm54259_4/script.json
+doc,fm54568,local_0094,,speaker_missing,0.2388,화자 없는 대사 32/134 > 5%,docs/fm54568/script.json
+doc,fm54708,local_0113,,speaker_missing,0.073,화자 없는 대사 53/726 > 5%,docs/fm54708/script.json
+doc,fm55186,local_0183,,speaker_missing,0.0569,화자 없는 대사 51/897 > 5%,docs/fm55186/script.json
+doc,fm55536,local_0244,,speaker_missing,0.7811,"앞 대사에서 이어받은 추정 화자 125/571 > 10%(speaker_inferred, 틀릴 수 있음)",docs/fm55536/script.json
+doc,fm55773,local_0285,,speaker_missing,0.8344,"앞 대사에서 이어받은 추정 화자 125/755 > 10%(speaker_inferred, 틀릴 수 있음)",docs/fm55773/script.json
+doc,fm55807,local_0292,,speaker_missing,0.0591,화자 없는 대사 44/744 > 5%,docs/fm55807/script.json
+doc,fm55866,local_0300,,speaker_missing,0.063,화자 없는 대사 37/587 > 5%,docs/fm55866/script.json
+doc,fm56190,local_0384,,speaker_missing,0.8595,"앞 대사에서 이어받은 추정 화자 92/655 > 10%(speaker_inferred, 틀릴 수 있음)",docs/fm56190/script.json
+doc,fm773767,local_0555,,speaker_missing,0.0865,화자 없는 대사 43/497 > 5%,docs/fm773767/script.json
+doc,fm54163,local_0010,,other,0.985,"한컴 PDF 가 원본 글 일부를 잃었을 수 있음(대체 경로 글의 글자 중 1.5% 없음), 레이아웃 때문에 PDF 를 씀",filmmakers_scripts/한국영화 시나리오/다찌마와 리 시나리오 입니다 [54163].doc
+doc,fm55169,local_0179,,other,0.842,"한컴 PDF 가 글 일부를 잃음(원본 글자 중 15.8% 없음), 대체 경로 글을 씀(레이아웃 없음, fallback_hwp5_bodytext)",filmmakers_scripts/한국영화 시나리오/사랑을 놓치다 [55169].hwp
+doc,fm55634,local_0264,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_hwp5_bodytext): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/한국영화 시나리오/만남의 광장 시나리오입니다 [55634].hwp
+doc,fm56063,local_0343,,other,0.955,"한컴 PDF 가 글 일부를 잃음(원본 글자 중 4.5% 없음), 대체 경로 글을 씀(레이아웃 없음, fallback_antiword)",filmmakers_scripts/외국영화 시나리오/Fargo [56063].doc
+doc,fm56184,local_0382,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_antiword): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/외국영화 시나리오/토탈리콜 Total Recall [56184].doc
+doc,fm56350_1,local_0430,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_antiword): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/외국영화 시나리오/맨 인 블랙 Men In Black [56350] 1_mib.doc
+doc,fm56365,local_0434,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_hwp5_bodytext): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/외국영화 시나리오/매그놀리아 Magnolia [56365].hwp
+doc,fm56725,local_0502,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_antiword): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/외국영화 시나리오/Spider Man (스파이더맨) [56725].doc
+doc,fm56878,local_0533,,other,,manifest 에는 받은 첨부인데 디스크에 없음: MovieSmiCh.exe,

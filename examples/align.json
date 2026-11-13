@@ -1,0 +1,119 @@
+{
+ "schema": "sink.align/1",
+ "script_doc": "fm55574",
+ "asr_sha1": "50014d969f8115cc6b3496e214ea0f574d659f0f",
+ "method": {
+  "anchor": "difflib-blocks+LIS",
+  "acoustic": "ctc-logprob",
+  "forced": "ctc-forced-aligner",
+  "translate": "labse-cosine"
+ },
+ "ops": [
+  {
+   "item": "I0003",
+   "op": "changed",
+   "script_el": "E0006",
+   "asr": [
+    "plain:0",
+    "plain:3"
+   ],
+   "match": "text",
+   "text_score": 0.55,
+   "candidates": [
+    {
+     "text": "어제 밤에 어디 있었냐고.",
+     "src": "asr",
+     "score": -12.3
+    },
+    {
+     "text": "너 어제 어디 있었어?",
+     "src": "script",
+     "score": -31.0
+    }
+   ],
+   "chosen": 0,
+   "decided_by": "acoustic"
+  },
+  {
+   "item": "I0004",
+   "op": "same",
+   "script_el": "E0007",
+   "asr": [
+    "plain:4",
+    "plain:5"
+   ],
+   "match": "text",
+   "text_score": 1.0,
+   "decided_by": "rule"
+  },
+  {
+   "item": "I0005",
+   "op": "added",
+   "script_el": null,
+   "asr": [
+    "plain:6",
+    "plain:9"
+   ],
+   "match": null,
+   "decided_by": "rule"
+  },
+  {
+   "item": "I0006",
+   "op": "absent",
+   "script_el": "E0008",
+   "asr": null,
+   "match": "text",
+   "decided_by": "rule"
+  },
+  {
+   "item": "I0007",
+   "op": "changed",
+   "script_el": "E0009",
+   "asr": [
+    "plain:10",
+    "plain:15"
+   ],
+   "match": "text",
+   "text_score": 0.9,
+   "decided_by": "rule"
+  },
+  {
+   "item": "I0009",
+   "op": "same",
+   "script_el": "E0011",
+   "asr": [
+    "plain:16",
+    "plain:18"
+   ],
+   "match": "text",
+   "text_score": 0.95,
+   "decided_by": "rule"
+  },
+  {
+   "item": "I0010",
+   "op": "same",
+   "script_el": "E0012",
+   "asr": [
+    "plain:19",
+    "plain:19"
+   ],
+   "match": "text",
+   "text_score": 1.0,
+   "decided_by": "rule"
+  }
+ ],
+ "scenes": [
+  {
+   "scene": "SC001",
+   "start": 721.8,
+   "end": 790.2,
+   "how": "anchors"
+  },
+  {
+   "scene": "SC002",
+   "start": 790.2,
+   "end": 805.0,
+   "how": "estimated"
+  }
+ ]
+}

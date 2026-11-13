@@ -1,0 +1,45 @@
+{"n": 430, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": "#편지(이쯔끼) 편지 낭독 보이스오버, speaker_raw '편지(이쯔끼)'"}
+{"n": 431, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": "#편지(이쯔끼) 편지 낭독 보이스오버, speaker_raw '편지(이쯔끼)'"}
+{"n": 432, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": "#편지(이쯔끼) 편지 낭독 보이스오버, speaker_raw '편지(이쯔끼)'"}
+{"n": 433, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": "#편지(이쯔끼) 편지 낭독 보이스오버, speaker_raw '편지(이쯔끼)'; 줄 끝 (이쯔끼가 자전거를 타고 온다)는 괄호 지문"}
+{"n": 434, "type": "dialogue", "speaker": "요시야", "scene_number": null, "note": null}
+{"n": 435, "type": "dialogue", "speaker": "아끼바", "scene_number": null, "note": null}
+{"n": 436, "type": "dialogue", "speaker": "요시야", "scene_number": null, "note": null}
+{"n": 437, "type": "dialogue", "speaker": "아끼바", "scene_number": null, "note": null}
+{"n": 438, "type": "dialogue", "speaker": "요시야", "scene_number": null, "note": null}
+{"n": 439, "type": "dialogue", "speaker": "아끼바", "scene_number": null, "note": null}
+{"n": 440, "type": "dialogue", "speaker": "요시야", "scene_number": null, "note": "대사 뒤 괄호 지문 (이때 이즈끼가 ... 지나간다.) 섞임"}
+{"n": 441, "type": "dialogue", "speaker": "요시야", "scene_number": null, "note": "440 괄호 지문의 이어지는 줄"}
+{"n": 442, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 443, "type": "dialogue", "speaker": "히루꼬", "scene_number": null, "note": "히로꼬의 오타로 보이나 적힌 그대로"}
+{"n": 444, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 445, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": "#편지(이쯔끼) 편지 낭독 보이스오버, speaker_raw '편지(이쯔끼)'"}
+{"n": 446, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": "#편지(이쯔끼) 편지 낭독 보이스오버, speaker_raw '편지(이쯔끼)'"}
+{"n": 447, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": "#편지(이쯔끼) 편지 낭독 보이스오버, speaker_raw '편지(이쯔끼)'"}
+{"n": 448, "type": "action", "speaker": null, "scene_number": null, "note": "'-'로 시작하지만 장소가 아닌 행동 묘사(새 장면 시작 지문)"}
+{"n": 449, "type": "dialogue", "speaker": "아베가와", "scene_number": null, "note": null}
+{"n": 450, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": null}
+{"n": 451, "type": "dialogue", "speaker": "아베가와", "scene_number": null, "note": null}
+{"n": 452, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": "이.어 = 이쯔끼 어머니 약칭, 적힌 그대로"}
+{"n": 453, "type": "dialogue", "speaker": "아베가와", "scene_number": null, "note": null}
+{"n": 454, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 455, "type": "dialogue", "speaker": "아베가와", "scene_number": null, "note": null}
+{"n": 456, "type": "dialogue", "speaker": "이쯔끼", "scene_number": null, "note": null}
+{"n": 457, "type": "dialogue", "speaker": "아베가와", "scene_number": null, "note": null}
+{"n": 458, "type": "dialogue", "speaker": "아베가와", "scene_number": null, "note": null}
+{"n": 459, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 460, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 461, "type": "scene", "speaker": null, "scene_number": null, "note": "이 문서는 S# 없이 '-장소' 줄로만 장면을 나눔(-고오베, -오따루 등). 씬 머리로 봄, action 해석도 가능"}
+{"n": 462, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 463, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 464, "type": "dialogue", "speaker": "할아버지", "scene_number": null, "note": null}
+{"n": 465, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 466, "type": "dialogue", "speaker": "할아버지", "scene_number": null, "note": null}
+{"n": 467, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 468, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 469, "type": "dialogue", "speaker": "할아버지", "scene_number": null, "note": null}
+{"n": 470, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 471, "type": "dialogue", "speaker": "할아버지", "scene_number": null, "note": null}
+{"n": 472, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}
+{"n": 473, "type": "dialogue", "speaker": "할아버지", "scene_number": null, "note": null}
+{"n": 474, "type": "dialogue", "speaker": "이.어", "scene_number": null, "note": null}

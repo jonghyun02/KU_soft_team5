@@ -1,0 +1,131 @@
+{
+ "note": "정답 표본 구간. set=dev 는 파서 개발 중 볼 수 있음, test 는 마지막 확인용(파서 작성자는 보지 않음).",
+ "windows": [
+  {
+   "doc_id": "fm6535184",
+   "start": 1270,
+   "count": 45,
+   "set": "dev",
+   "file": "fm6535184_w1.jsonl"
+  },
+  {
+   "doc_id": "fm6535184",
+   "start": 0,
+   "count": 40,
+   "set": "dev",
+   "file": "fm6535184_w0.jsonl"
+  },
+  {
+   "doc_id": "fm54897",
+   "start": 981,
+   "count": 45,
+   "set": "dev",
+   "file": "fm54897_w1.jsonl"
+  },
+  {
+   "doc_id": "fm55985",
+   "start": 430,
+   "count": 45,
+   "set": "dev",
+   "file": "fm55985_w1.jsonl"
+  },
+  {
+   "doc_id": "fm416771",
+   "start": 1274,
+   "count": 45,
+   "set": "dev",
+   "file": "fm416771_w1.jsonl"
+  },
+  {
+   "doc_id": "fm416771",
+   "start": 0,
+   "count": 40,
+   "set": "dev",
+   "file": "fm416771_w0.jsonl"
+  },
+  {
+   "doc_id": "fm5691744",
+   "start": 1122,
+   "count": 45,
+   "set": "dev",
+   "file": "fm5691744_w1.jsonl"
+  },
+  {
+   "doc_id": "fm3261255",
+   "start": 1945,
+   "count": 45,
+   "set": "dev",
+   "file": "fm3261255_w1.jsonl"
+  },
+  {
+   "doc_id": "fm3261255",
+   "start": 0,
+   "count": 40,
+   "set": "dev",
+   "file": "fm3261255_w0.jsonl"
+  },
+  {
+   "doc_id": "fm56107",
+   "start": 1385,
+   "count": 45,
+   "set": "dev",
+   "file": "fm56107_w1.jsonl"
+  },
+  {
+   "doc_id": "fm5691757",
+   "start": 1329,
+   "count": 45,
+   "set": "dev",
+   "file": "fm5691757_w1.jsonl"
+  },
+  {
+   "doc_id": "fm5691757",
+   "start": 0,
+   "count": 40,
+   "set": "dev",
+   "file": "fm5691757_w0.jsonl"
+  },
+  {
+   "doc_id": "fm56787",
+   "start": 1567,
+   "count": 45,
+   "set": "dev",
+   "file": "fm56787_w1.jsonl"
+  },
+  {
+   "doc_id": "fm54122",
+   "start": 815,
+   "count": 45,
+   "set": "dev",
+   "file": "fm54122_w1.jsonl"
+  },
+  {
+   "doc_id": "fm416338",
+   "start": 1042,
+   "count": 45,
+   "set": "test",
+   "file": "fm416338_w1.jsonl"
+  },
+  {
+   "doc_id": "fm36187196",
+   "start": 1725,
+   "count": 45,
+   "set": "test",
+   "file": "fm36187196_w1.jsonl"
+  },
+  {
+   "doc_id": "fm55354",
+   "start": 838,
+   "count": 45,
+   "set": "test",
+   "file": "fm55354_w1.jsonl"
+  },
+  {
+   "doc_id": "fm54352",
+   "start": 931,
+   "count": 45,
+   "set": "test",
+   "file": "fm54352_w1.jsonl"
+  }
+ ]
+}

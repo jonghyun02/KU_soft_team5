@@ -1,0 +1,40 @@
+{"n": 0, "type": "dropped", "speaker": null, "scene_number": null, "note": "매 쪽 머리말(쪽수·제목·판본·날짜)"}
+{"n": 1, "type": "scene", "speaker": null, "scene_number": "1", "note": null}
+{"n": 2, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 3, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 4, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 5, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 6, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 7, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 8, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 9, "type": "dialogue", "speaker": "하윤주", "scene_number": null, "note": "화자 이름 줄, 대사 ... 은 줄 목록에 없음"}
+{"n": 10, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 11, "type": "scene", "speaker": null, "scene_number": "2", "note": null}
+{"n": 12, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 13, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 14, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 15, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 16, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 17, "type": "dialogue", "speaker": "안내", "scene_number": null, "note": null}
+{"n": 18, "type": "dialogue", "speaker": "안내", "scene_number": null, "note": null}
+{"n": 19, "type": "action", "speaker": null, "scene_number": null, "note": "CCTV 화면 묘사 지문"}
+{"n": 20, "type": "scene", "speaker": null, "scene_number": "3", "note": null}
+{"n": 21, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 22, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 23, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 24, "type": "action", "speaker": null, "scene_number": null, "note": "씬 안 장소 바뀜 표시(다른 칸)"}
+{"n": 25, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 26, "type": "dialogue", "speaker": "쩍벌남", "scene_number": null, "note": "OCR 찍벌남, 그림은 쩍벌남"}
+{"n": 27, "type": "dialogue", "speaker": "쩍벌남", "scene_number": null, "note": null}
+{"n": 28, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 29, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 30, "type": "dialogue", "speaker": "하윤주", "scene_number": null, "note": null}
+{"n": 31, "type": "dialogue", "speaker": "하윤주", "scene_number": null, "note": null}
+{"n": 32, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 33, "type": "dialogue", "speaker": "쇼핑녀", "scene_number": null, "note": null}
+{"n": 34, "type": "dialogue", "speaker": "쇼핑녀", "scene_number": null, "note": null}
+{"n": 35, "type": "dialogue", "speaker": "쩍벌남", "scene_number": null, "note": "화자 이름 줄, 대사는 다음 쪽 첫 줄"}
+{"n": 36, "type": "dropped", "speaker": null, "scene_number": null, "note": "매 쪽 꼬리말(제작사 연락처)"}
+{"n": 37, "type": "dropped", "speaker": null, "scene_number": null, "note": "매 쪽 꼬리말(주소)"}
+{"n": 38, "type": "dropped", "speaker": null, "scene_number": null, "note": "쪽번호"}
+{"n": 39, "type": "dropped", "speaker": null, "scene_number": null, "note": "매 쪽 머리말"}

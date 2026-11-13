@@ -1,0 +1,505 @@
+{
+ "schema": "sink.final/1",
+ "film": {
+  "id": "kmdb_K12345",
+  "title": "범죄의 재구성",
+  "title_orig": null,
+  "year": 2004,
+  "video": {
+   "sha1": "aa7a5bf94b487a638410204d4878d7cbebbeb702",
+   "duration": 7290.4,
+   "lang": "ko"
+  },
+  "script": {
+   "doc_id": "fm55574",
+   "version": "shooting",
+   "lang": "ko",
+   "translation": false,
+   "match": 0.71
+  }
+ },
+ "made": {
+  "pipeline": "0.1.0",
+  "asr": "faster-whisper large-v3",
+  "aligner": "sink-align 0.1.0",
+  "translator": "sink-mt 0.1.0",
+  "conf": "평균(낱말 p, 연결 점수)"
+ },
+ "people": [
+  {
+   "id": "P01",
+   "name": "형사",
+   "aliases": [
+    "강형사"
+   ]
+  },
+  {
+   "id": "P02",
+   "name": "창혁",
+   "aliases": []
+  },
+  {
+   "id": "P03",
+   "name": "천세황",
+   "aliases": []
+  },
+  {
+   "id": "P04",
+   "name": "제임스",
+   "aliases": []
+  }
+ ],
+ "scenes": [
+  {
+   "id": "SC001",
+   "number": "12",
+   "heading": "경찰서 취조실 - 밤",
+   "place": "경찰서 취조실",
+   "time": "밤",
+   "flags": [],
+   "start": 721.8,
+   "end": 790.2,
+   "timing": "estimated"
+  },
+  {
+   "id": "SC002",
+   "number": "12A",
+   "heading": "경찰서 복도 - 밤 (회상)",
+   "place": "경찰서 복도",
+   "time": "밤",
+   "flags": [
+    "flashback"
+   ],
+   "start": 790.2,
+   "end": 805.0,
+   "timing": "estimated"
+  }
+ ],
+ "items": [
+  {
+   "id": "I0001",
+   "type": "scene",
+   "scene": "SC001",
+   "text": "S#12. 경찰서 취조실 - 밤",
+   "start": 721.8,
+   "end": null,
+   "timing": "estimated",
+   "src_el": "E0004"
+  },
+  {
+   "id": "I0002",
+   "type": "action",
+   "scene": "SC001",
+   "text": "형사, 서류를 책상에 던진다.",
+   "start": 721.8,
+   "end": null,
+   "timing": "estimated",
+   "src_el": "E0005"
+  },
+  {
+   "id": "I0003",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P01"
+   ],
+   "speaker_from": "script",
+   "how": "on",
+   "lang": "ko",
+   "heard": "어제 밤에 어디 있었냐고.",
+   "ko": "어제 밤에 어디 있었냐고.",
+   "ko_src": "same",
+   "start": 723.4,
+   "end": 725.1,
+   "timing": "aligned",
+   "words": [
+    {
+     "w": "어제",
+     "s": 723.4,
+     "e": 723.71,
+     "p": 0.98
+    },
+    {
+     "w": "밤에",
+     "s": 723.71,
+     "e": 723.95,
+     "p": 0.95
+    },
+    {
+     "w": "어디",
+     "s": 724.0,
+     "e": 724.3,
+     "p": 0.97
+    },
+    {
+     "w": "있었냐고.",
+     "s": 724.3,
+     "e": 725.1,
+     "p": 0.91
+    }
+   ],
+   "status": "changed",
+   "match": "text",
+   "script_ref": {
+    "el": "E0006",
+    "text": "너 어제 어디 있었어?"
+   },
+   "diffs": [
+    {
+     "kind": "word",
+     "script": "너",
+     "heard": ""
+    },
+    {
+     "kind": "word",
+     "script": "",
+     "heard": "밤에"
+    },
+    {
+     "kind": "word",
+     "script": "있었어?",
+     "heard": "있었냐고."
+    }
+   ],
+   "paren": [],
+   "sung": false,
+   "overlap": null,
+   "conf": 0.86,
+   "src_el": "E0006"
+  },
+  {
+   "id": "I0004",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P02"
+   ],
+   "speaker_from": "script",
+   "how": "on",
+   "lang": "ko",
+   "heard": "집에 있었는데요.",
+   "ko": "집에 있었는데요.",
+   "ko_src": "same",
+   "start": 725.6,
+   "end": 726.7,
+   "timing": "aligned",
+   "words": [
+    {
+     "w": "집에",
+     "s": 725.6,
+     "e": 725.9,
+     "p": 0.96
+    },
+    {
+     "w": "있었는데요.",
+     "s": 725.9,
+     "e": 726.7,
+     "p": 0.94
+    }
+   ],
+   "status": "same",
+   "match": "text",
+   "script_ref": {
+    "el": "E0007",
+    "text": "집에 있었는데요."
+   },
+   "diffs": [],
+   "paren": [
+    {
+     "text": "웃으며",
+     "at": 0
+    }
+   ],
+   "sung": false,
+   "overlap": null,
+   "conf": 0.93,
+   "src_el": "E0007"
+  },
+  {
+   "id": "I0005",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [],
+   "speaker_from": "unknown",
+   "how": "unknown",
+   "lang": "ko",
+   "heard": "웃어? 지금 웃음이 나와?",
+   "ko": "웃어? 지금 웃음이 나와?",
+   "ko_src": "same",
+   "start": 728.1,
+   "end": 729.6,
+   "timing": "aligned",
+   "words": [
+    {
+     "w": "웃어?",
+     "s": 728.1,
+     "e": 728.4,
+     "p": 0.8
+    },
+    {
+     "w": "지금",
+     "s": 728.5,
+     "e": 728.75,
+     "p": 0.85
+    },
+    {
+     "w": "웃음이",
+     "s": 728.75,
+     "e": 729.1,
+     "p": 0.83
+    },
+    {
+     "w": "나와?",
+     "s": 729.1,
+     "e": 729.6,
+     "p": 0.79
+    }
+   ],
+   "status": "added",
+   "match": null,
+   "script_ref": null,
+   "diffs": [],
+   "paren": [],
+   "sung": false,
+   "overlap": null,
+   "conf": 0.74,
+   "src_el": null
+  },
+  {
+   "id": "I0006",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P01"
+   ],
+   "speaker_from": "script",
+   "how": "on",
+   "lang": "ko",
+   "heard": null,
+   "ko": null,
+   "ko_src": null,
+   "start": null,
+   "end": null,
+   "timing": "none",
+   "words": [],
+   "status": "absent",
+   "match": "text",
+   "script_ref": {
+    "el": "E0008",
+    "text": "거짓말하지 마."
+   },
+   "diffs": [],
+   "paren": [],
+   "sung": false,
+   "overlap": null,
+   "conf": 0.9,
+   "src_el": "E0008"
+  },
+  {
+   "id": "I0007",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P03"
+   ],
+   "speaker_from": "script",
+   "how": "radio",
+   "lang": "ko",
+   "heard": "어, 본부, 여기는 3호차. 응답하라, 오버.",
+   "ko": "어, 본부, 여기는 3호차. 응답하라, 오버.",
+   "ko_src": "same",
+   "start": 730.7,
+   "end": 733.5,
+   "timing": "aligned",
+   "words": [
+    {
+     "w": "어,",
+     "s": 730.7,
+     "e": 730.9,
+     "p": 0.7
+    },
+    {
+     "w": "본부,",
+     "s": 731.0,
+     "e": 731.4,
+     "p": 0.93
+    },
+    {
+     "w": "여기는",
+     "s": 731.45,
+     "e": 731.8,
+     "p": 0.95
+    },
+    {
+     "w": "3호차.",
+     "s": 731.8,
+     "e": 732.4,
+     "p": 0.9
+    },
+    {
+     "w": "응답하라,",
+     "s": 732.6,
+     "e": 733.1,
+     "p": 0.92
+    },
+    {
+     "w": "오버.",
+     "s": 733.1,
+     "e": 733.5,
+     "p": 0.94
+    }
+   ],
+   "status": "changed",
+   "match": "text",
+   "script_ref": {
+    "el": "E0009",
+    "text": "본부, 여기는 3호차. 응답하라, 오버."
+   },
+   "diffs": [
+    {
+     "kind": "filler",
+     "script": "",
+     "heard": "어,"
+    }
+   ],
+   "paren": [],
+   "sung": false,
+   "overlap": null,
+   "conf": 0.88,
+   "src_el": "E0009"
+  },
+  {
+   "id": "I0008",
+   "type": "onscreen",
+   "scene": "SC001",
+   "kind": "insert",
+   "text": "진술서: 2003년 4월 2일",
+   "start": 734.0,
+   "end": 737.0,
+   "timing": "estimated",
+   "src_el": "E0010"
+  },
+  {
+   "id": "I0009",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P01",
+    "P02"
+   ],
+   "speaker_from": "script",
+   "how": "on",
+   "lang": "ko",
+   "heard": "아리랑 아리랑 아라리요",
+   "ko": "아리랑 아리랑 아라리요",
+   "ko_src": "same",
+   "start": 738.0,
+   "end": 740.5,
+   "timing": "aligned",
+   "words": [
+    {
+     "w": "아리랑",
+     "s": 738.0,
+     "e": 738.6,
+     "p": 0.88
+    },
+    {
+     "w": "아리랑",
+     "s": 738.6,
+     "e": 739.2,
+     "p": 0.87
+    },
+    {
+     "w": "아라리요",
+     "s": 739.2,
+     "e": 740.5,
+     "p": 0.85
+    }
+   ],
+   "status": "same",
+   "match": "text",
+   "script_ref": {
+    "el": "E0011",
+    "text": "아리랑 아리랑 아라리요~"
+   },
+   "diffs": [],
+   "paren": [
+    {
+     "text": "노래하며",
+     "at": 0
+    }
+   ],
+   "sung": true,
+   "overlap": null,
+   "conf": 0.81,
+   "src_el": "E0011"
+  },
+  {
+   "id": "I0010",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P04"
+   ],
+   "speaker_from": "script",
+   "how": "on",
+   "lang": "en",
+   "heard": "Sir!",
+   "ko": "선생님!",
+   "ko_src": "mt",
+   "start": 741.2,
+   "end": 741.6,
+   "timing": "aligned",
+   "words": [
+    {
+     "w": "Sir!",
+     "s": 741.2,
+     "e": 741.6,
+     "p": 0.97,
+     "lang": "en"
+    }
+   ],
+   "status": "same",
+   "match": "text",
+   "script_ref": {
+    "el": "E0012",
+    "text": "Sir!"
+   },
+   "diffs": [],
+   "paren": [],
+   "sung": false,
+   "overlap": null,
+   "conf": 0.95,
+   "src_el": "E0012"
+  },
+  {
+   "id": "I0011",
+   "type": "transition",
+   "scene": "SC001",
+   "text": "CUT TO",
+   "start": 742.0,
+   "end": null,
+   "timing": "estimated",
+   "src_el": "E0013"
+  },
+  {
+   "id": "I0012",
+   "type": "scene",
+   "scene": "SC002",
+   "text": "S#12A. 경찰서 복도 - 밤 (회상)",
+   "start": 790.2,
+   "end": null,
+   "timing": "estimated",
+   "src_el": "E0014"
+  }
+ ],
+ "quality": {
+  "dialogue": 7,
+  "same": 3,
+  "changed": 2,
+  "added": 1,
+  "absent": 1,
+  "speaker_unknown": 1,
+  "mean_word_p": 0.894
+ }
+}

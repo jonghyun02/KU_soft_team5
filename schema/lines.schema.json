@@ -1,0 +1,62 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://sink.local/schema/lines.schema.json",
+ "title": "sink lines.jsonl (형식 통일 줄)",
+ "description": "명세 4.4.1. JSONL 파일 전체를 행 배열로 보고 검사한다. 0번 행은 머리 행, 1번 행부터 물리적인 줄 1개 = 1행. 의미 규칙(n 연속, file 범위, NFC)은 sinkprep.validate 가 따로 본다.",
+ "type": "array",
+ "minItems": 1,
+ "prefixItems": [{"$ref": "#/$defs/header"}],
+ "items": {"$ref": "#/$defs/line"},
+ "$defs": {
+  "doc_id": {"type": "string", "pattern": "^fm[0-9]+(_[0-9]+)?$"},
+  "unit": {"type": "number", "minimum": 0, "maximum": 1},
+  "header": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["schema", "doc_id", "files", "made"],
+   "properties": {
+    "schema": {"const": "sink.lines/1"},
+    "doc_id": {"$ref": "#/$defs/doc_id"},
+    "files": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "made": {
+     "type": "object",
+     "required": ["stage", "version"],
+     "properties": {
+      "stage": {"const": "lines"},
+      "version": {"type": "string", "minLength": 1}
+     }
+    }
+   }
+  },
+  "line": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["n", "file", "page", "x", "y", "text", "bold", "cell", "src", "conf"],
+   "properties": {
+    "n": {"type": "integer", "minimum": 0},
+    "file": {"type": "integer", "minimum": 0},
+    "page": {"type": ["integer", "null"], "minimum": 1},
+    "x": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "y": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "text": {"type": "string"},
+    "bold": {"type": ["boolean", "null"]},
+    "cell": {
+     "type": ["object", "null"],
+     "additionalProperties": false,
+     "required": ["table", "row", "col"],
+     "properties": {
+      "table": {"type": "integer", "minimum": 0},
+      "row": {"type": "integer", "minimum": 0},
+      "col": {"type": "integer", "minimum": 0}
+     }
+    },
+    "src": {"enum": ["hwp", "doc", "docx", "rtf", "pdf_text", "ocr", "txt", "xls"]},
+    "conf": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+   },
+   "$comment": "conf 는 OCR 줄에만 값이 있다(엔진이 신뢰도를 주지 않으면 null). OCR 이 아닌 줄은 null.",
+   "if": {"required": ["src"], "properties": {"src": {"const": "ocr"}}},
+   "then": true,
+   "else": {"properties": {"conf": {"type": "null"}}}
+  }
+ }
+}
