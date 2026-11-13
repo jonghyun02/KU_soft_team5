@@ -199,7 +199,8 @@ C:\projects\sink\
 - 쪽 넘김으로 쪼개진 대사(`(MORE)`, `(CONT'D)`, `(계속)`)는 요소 하나로 합치고 표시 줄은 `dropped`(why: `cont_marker`)로 보낸다. 쪽번호·머리말·꼬리말·`(CONTINUED)`·여백 수정표시 `*`도 `dropped`.
 - 줄을 합칠 때 낱말 중간 줄바꿈(`벗는\n다.`)은 공백 없이 잇는다.
 - `quality.score` 초기 기준(조정 가능): typed_ratio < 0.85, dialogue_ratio < 0.15, OCR 평균 conf < 0.85, 화자 없는 대사 > 5% 중 하나라도 걸리면 `needs_review`.
-  - (구현 중 보완 2026-11-13) `quality.empty_dialogue`(말 없이 이름 줄만 잡힌 대사 수)와 `quality.inferred_speaker`(speaker_inferred 대사 수)를 더 센다. 말 없는 대사 > 10%면 `parse_low_dialogue`(대사 모양을 잘못 읽어 말이 지문으로 갔을 수 있음), 추정 화자 > 10%면 `speaker_missing` 으로 올린다. 규칙 파서는 모르는 줄을 지문으로 두므로 typed_ratio 만으로는 잘못 읽은 문서를 못 잡기 때문.
+  - (구현 중 보완 2026-11-13) `quality.empty_dialogue`(말 없이 이름 줄만 잡힌 대사 수. 한 줄짜리 `이름: (행동만)` 반응처럼 원래 말이 없는 줄은 세지 않음)와 `quality.inferred_speaker`(speaker_inferred 대사 수)를 더 센다. 말 없는 대사 > 10%면 `parse_low_dialogue`(대사 모양을 잘못 읽어 말이 지문으로 갔을 수 있음), 추정 화자 > 10%면 `speaker_missing` 으로 올린다. 규칙 파서는 모르는 줄을 지문으로 두므로 typed_ratio 만으로는 잘못 읽은 문서를 못 잡기 때문.
+- (구현 중 보완 2026-11-13) 규칙 파서(`parser.name` = `sink-parse`)가 무너지는 문서(parse_low_dialogue·speaker_missing·typed_ratio 낮음)는 LLM 파서(`parser.name` = `sink-parse-llm`, `parser.version` = `{조립 버전}+{프롬프트 버전}`)가 같은 스키마로 다시 만들고, validate 를 통과하고 품질 지표가 뚜렷이 나쁘지 않으면 그 판을 script.json 으로 쓴다(정답 표본에서 LLM 판이 모든 묶음에서 더 정확했음). 재현성: 모델 ID 고정(별칭 금지)·응답 캐시(입력 해시+모델 ID+프롬프트 버전 키)라 다시 돌려도 바이트 단위로 같은 결과, 모델 ID·프롬프트 버전·캐시 키는 `quality.notes` 에 남긴다(sinkprep/llm_parse.py, notes/llm_parse.md).
 
 #### 4.4.3 까다로운 경우 11가지와 표현 방법
 | # | 경우 | 표현 |

@@ -1,6 +1,6 @@
 # sink 대본 형식 통일 전처리 결과 보고
 
-만든 시각: 2026-11-13 09:20 · 생성기 `tools/make_report.py`(모든 숫자는 디스크 결과물에서 다시 셈)
+만든 시각: 2026-11-13 13:27 · 생성기 `tools/make_report.py`(모든 숫자는 디스크 결과물에서 다시 셈)
 
 ## 1. 원본과 카탈로그
 - 원본 파일 701개(manifest 제외) + 압축에서 나온 파일 13개 = 714개
@@ -40,27 +40,36 @@
 - lines.jsonl 있는 문서 684/684, 줄 0개 문서 0개, 총 줄 2,163,497
 - 줄 출처: hwp 1,202,057, pdf_text 480,594, ocr 250,713, doc 179,153, txt 39,231, docx 6,194, rtf 4,655, xls 900
 - script.json 있는 문서 684/684
-- 요소 종류별 줄 비율: dialogue 57.8%, action 36.7%, scene 4.1%, transition 0.6%, front 0.6%, onscreen 0.1%, unknown 0.0%
-- 문서 품질 점수 분포: 10% 0.94 · 중앙값 1.00 · 90% 1.00
+- 요소 종류별 줄 비율: dialogue 58.1%, action 36.4%, scene 4.2%, transition 0.6%, front 0.5%, onscreen 0.1%, unknown 0.0%
+- 문서 품질 점수 분포: 10% 0.97 · 중앙값 1.00 · 90% 1.00
   - typed_ratio: 10% 1.00 · 중앙값 1.00 · 90% 1.00
   - dialogue_ratio: 10% 0.36 · 중앙값 0.55 · 90% 0.74
   - unknown_ratio: 10% 0.00 · 중앙값 0.00 · 90% 0.00
 
 ## 5. 파서 정확도(독립 정답 표본)
-- 개발용(dev): 줄 610개, 요소 종류 98.4%, 화자 97.6% (대사 줄 330개)
-- 확인용(test, 파서 개발 중 안 봄): 줄 180개, 요소 종류 98.3%, 화자 98.3% (대사 줄 118개)
-- 전체(dev+test): 줄 790개, 요소 종류 98.4%, 화자 97.8% (대사 줄 448개)
-- 정답 표본: 구간 18개, 문서 14개, 두 사람 독립 표시 후 갈린 줄만 판정
+규칙 판 = 규칙 파서(sink-parse)만, 지금 판 = docs/*/script.json(llm 단계가 받아들인 문서는 LLM 판). 값은 요소 종류% / 화자%. hard-test 는 처음 열었을 때(LLM 단계 고치기 전) LLM 창 채점 100/100(120줄 조각 98.9/100)이었고, 그 뒤 hard-test 문서 사례를 보고 조립을 고쳤으므로 지금 값은 개발용으로 본다.
+
+- 개발용(dev): 줄 610개(대사 줄 330개), 규칙 판 98.4 / 97.6, 지금 판 98.4 / 97.6
+- 확인용(test, 파서 개발 중 안 봄): 줄 180개(대사 줄 118개), 규칙 판 98.3 / 98.3, 지금 판 98.3 / 98.3
+- dev+test+hard-dev: 줄 970개(대사 줄 537개), 규칙 판 94.1 / 92.0, 지금 판 98.7 / 98.1
+- 어려운 꼴 개발용(hard-dev): 줄 180개(대사 줄 89개), 규칙 판 75.6 / 62.9, 지금 판 100.0 / 100.0
+- 어려운 꼴 확인용(hard-test): 줄 180개(대사 줄 118개), 규칙 판 81.7 / 75.4, 지금 판 100.0 / 100.0
+- 정답 표본: 구간 26개, 문서 22개, 두 사람 독립 표시 후 갈린 줄만 판정
+
+## 5b. LLM 파싱 단계(llm)
+- 모델 claude-opus-5-5(effort medium), 프롬프트 lp1, 조립 0.2.2. 다룬 문서 37개: LLM 판 사용 29, 규칙 판 유지 8
+- docs 의 파서: sink-parse 655, sink-parse-llm 29
+- claude 응답 캐시 855개(cache/llm). 같은 입력은 다시 부르지 않아 다시 돌려도 바이트 단위로 같다. `sinkprep all` 은 캐시만 쓴다.
 
 ## 6. 확인 필요 목록(qa/needs_review.csv)
-- 49건(문서 46개): parse_low_dialogue 25, speaker_missing 13, other 9, extract_broken 2
+- 21건(문서 21개): other 9, parse_low_dialogue 7, speaker_missing 3, extract_broken 2
 
 ## 7. 수락 기준 확인
 - A1 모든 원본·압축 해제 파일이 정확히 한 행에: 오류 0개
 - A2 영화마다 is_primary 최대 1개: 오류 0개
 - A3 앞 바이트 판별: 위장 파일 4개 판별(위 1절), tests/test_detect.py
-- B1·B2·B3·E1·E2 `sinkprep validate`(catalog, needs_review, docs 전체, examples): 검사 1375개, 실패 0개, 오류 0개, 4.4초
+- B1·B2·B3·E1·E2 `sinkprep validate`(catalog, needs_review, docs 전체, examples): 검사 1375개, 실패 0개, 오류 0개, 4.3초
 - B4 needs_review 기준값: typed_ratio<0.85, dialogue_ratio<0.15, 화자 없는 대사>5%, 말 없는 대사(이름 줄만)>=10%, 추정 화자(speaker_inferred)>10%, OCR conf<0.85, 추출 실패·쪽 그림 실패, 한컴 PDF 글자 손실>1%
 - B5 까다로운 경우 11가지: tests/fixtures/parse/, tests/test_parse.py
 
-(보고 생성 14초)
+(보고 생성 16초)

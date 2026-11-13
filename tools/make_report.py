@@ -132,6 +132,7 @@ def main() -> int:
     n_lines, src = [], Counter()
     n_script = 0
     types = Counter()
+    parsers = Counter()
     qs = []
     q_items = defaultdict(list)
     empty = []
@@ -148,6 +149,7 @@ def main() -> int:
         if sp.exists():
             n_script += 1
             s = util.read_json(sp)
+            parsers[(s.get("parser") or {}).get("name")] += 1
             for el in s.get("elements", []):
                 types[el["type"]] += len(el.get("lines", []))
             qq = s.get("quality") or {}
@@ -168,18 +170,38 @@ def main() -> int:
     w("")
     # ---------- 정답 표본
     w("## 5. 파서 정확도(독립 정답 표본)")
-    for name, sset in (("개발용(dev)", "dev"), ("확인용(test, 파서 개발 중 안 봄)", "test"), ("전체(dev+test)", "all")):
-        p = paths.CACHE / f"eval_{sset}.json"
-        subprocess.run([PY, "-I", str(ROOT / "tools" / "eval_parse.py"), "--set", sset, "--json", str(p)],
-                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if p.exists():
-            d = json.loads(p.read_text(encoding="utf-8"))
-            t = d["total"]
-            w(f"- {name}: 줄 {t.get('lines', 0)}개, 요소 종류 {100 * t.get('type_ok', 0) / max(1, t.get('lines', 0)):.1f}%, "
-              f"화자 {100 * t.get('spk_ok', 0) / max(1, t.get('spk_total', 0)):.1f}% (대사 줄 {t.get('spk_total', 0)}개)")
+    w("규칙 판 = 규칙 파서(sink-parse)만, 지금 판 = docs/*/script.json(llm 단계가 받아들인 문서는 LLM 판). 값은 요소 종류% / 화자%. "
+      "hard-test 는 처음 열었을 때(LLM 단계 고치기 전) LLM 창 채점 100/100(120줄 조각 98.9/100)이었고, 그 뒤 hard-test 문서 사례를 보고 "
+      "조립을 고쳤으므로 지금 값은 개발용으로 본다.")
+    w("")
+    for name, sset in (("개발용(dev)", "dev"), ("확인용(test, 파서 개발 중 안 봄)", "test"), ("dev+test+hard-dev", "all"),
+                       ("어려운 꼴 개발용(hard-dev)", "hard-dev"), ("어려운 꼴 확인용(hard-test)", "hard-test")):
+        got = {}
+        for which in ("rules", "current"):
+            p = paths.CACHE / f"eval_{sset}_{which}.json"
+            subprocess.run([PY, "-I", str(ROOT / "tools" / "eval_parse.py"), "--set", sset, "--which", which,
+                            "--json", str(p)], cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace")
+            if p.exists():
+                got[which] = json.loads(p.read_text(encoding="utf-8"))["total"]
+        if got:
+            t = next(iter(got.values()))
+            w(f"- {name}: 줄 {t.get('lines', 0)}개(대사 줄 {t.get('spk_total', 0)}개), " + ", ".join(
+                f"{'규칙 판' if k == 'rules' else '지금 판'} {100 * v.get('type_ok', 0) / max(1, v.get('lines', 0)):.1f} / "
+                f"{100 * v.get('spk_ok', 0) / max(1, v.get('spk_total', 0)):.1f}" for k, v in got.items()))
     gold = [p for p in (ROOT / "tests" / "gold").glob("*.jsonl")]
     gdocs = {util.read_jsonl(p)[0]["doc_id"] for p in gold if util.read_jsonl(p)}
     w(f"- 정답 표본: 구간 {len(gold)}개, 문서 {len(gdocs)}개, 두 사람 독립 표시 후 갈린 줄만 판정")
+    w("")
+    # ---------- llm 단계
+    from sinkprep import llm, llm_parse
+    w("## 5b. LLM 파싱 단계(llm)")
+    dec = Counter(util.read_json(f).get("decision") for f in (paths.STATE / "llm").glob("*.json"))
+    w(f"- 모델 {llm.MODEL}(effort {llm.EFFORT}), 프롬프트 {llm_parse.PROMPT_VERSION}, 조립 {llm_parse.VERSION}. "
+      f"다룬 문서 {sum(dec.values())}개: LLM 판 사용 {dec['llm']}, 규칙 판 유지 {dec['rules']}")
+    w("- docs 의 파서: " + ", ".join(f"{k} {v}" for k, v in parsers.most_common()))
+    w(f"- claude 응답 캐시 {len(list((paths.CACHE / 'llm').glob('*.json')))}개(cache/llm). 같은 입력은 다시 부르지 않아 "
+      "다시 돌려도 바이트 단위로 같다. `sinkprep all` 은 캐시만 쓴다.")
     w("")
     # ---------- needs_review
     w("## 6. 확인 필요 목록(qa/needs_review.csv)")

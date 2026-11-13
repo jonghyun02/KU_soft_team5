@@ -15,6 +15,7 @@ convert   hwp3/hwp5/doc/docx/rtf 파일                                 -> cache
 ocr       pdf_scan 파일 + 글자층 깨진 PDF(변환 PDF 포함)              -> cache/ocr/{doc_id}/{k}.json
 lines     catalog + cache                                              -> docs/{doc_id}/lines.jsonl
 parse     lines.jsonl                                                  -> docs/{doc_id}/script.json
+llm       parse 문제 문서의 lines + 규칙 판                              -> cache/parse_llm/{doc_id}.json (+ 뚜렷이 나쁘지 않으면 docs/{doc_id}/script.json)
 review    cache/problems/** + 문서 품질                                 -> qa/needs_review.csv
 validate  schema/*.schema.json + 의미 규칙                              -> 오류 목록(종료코드 1)
 ```
@@ -52,6 +53,42 @@ lines의 `src`: hwp, doc, docx, rtf, pdf_text, ocr, txt, xls(엑셀 표 대본: 
    "lines":[{"text":"S#1. 빵집. 낮","box":[x0,y0,x1,y1],"conf":0.97}]}]}
 ```
 `box`는 픽셀 좌표. lines 단계가 쪽 크기로 나눠 0~1로 바꾼다.
+
+## llm 단계 약속 (sinkprep/llm.py 백엔드, sinkprep/llm_parse.py 단계, 설계 notes/llm_parse.md)
+- 대상: 기본은 parse 단계 문제(parse_low_dialogue, speaker_missing, extract_broken = typed_ratio 낮음)가 있는 문서
+  (`cache/problems/parse/{doc}.json`, 즉 규칙 판 기준) + 두 언어가 섞인 문서(catalog script_lang mixed) + 전에 llm 단계 지문이 남은
+  문서(`--docs` 로 돌린 문서도 다음 기본 실행에서
+  같은 판을 다시 놓도록). `--docs` 로 지정, `--limit`, `--force`(지문 무시, LLM 은 캐시 그대로),
+  `--workers`(동시 claude 수, 기본 3), `--images`(OCR 줄 조각에 원본 쪽 그림을 함께). 형식 프로필이 이름 표기 없음(name_style
+  none: 자막 파일·녹취·시놉시스)이면 라벨링하지 않고 규칙 판.
+- 백엔드: Claude Code 구독 `claude -p`. 모델 ID 고정 `llm.MODEL`(별칭 금지), effort 고정 `llm.EFFORT`. 도구 전부 끔(`--tools ""`),
+  `--safe-mode`·`--setting-sources ""`·`--strict-mcp-config`·`--disable-slash-commands`·`--no-session-persistence`, 빈 작업 폴더
+  `cache/llm_work`, 부모 세션 환경 변수(CLAUDECODE·CLAUDE_CODE_*) 안 넘김. 응답 init 의 도구·MCP 와 modelUsage 의 모델을 검사
+  (성공 응답에 init 이 없으면 쓰지 않음).
+- 라벨 바로잡기(`fix_labels`, 결정적): 문서 글에 없는 화자 이름은 버림, 전환 말 없는 전환은 지문, INT./EXT. 꼴 문서의 영어 촬영
+  머리(ANGLE ON·POV·INSERT -)는 지문, 지문으로 붙은 `이름: (행동만)` 은 그 인물의 대사. 이름에 붙은 연기 지시(`광해(버럭)`)는
+  paren 에도 넣는다.
+- 캐시: `cache/llm/{key}.json`, key = sha1(캐시 형식, 모델 ID, effort, 프롬프트 버전, 입력 해시(시스템·사용자 글·스키마·그림 식별자)).
+  있으면 부르지 않는다. 다시 묻기는 그 파일을 지운다. 구조 검증 실패·일시 오류는 2번 더(모두 3번), 한도·과부하는 30/90/270초
+  백오프 뒤 멈춤(그 실행의 남은 캐시 없는 호출은 바로 실패, 캐시 있는 것은 계속).
+- 파일: 규칙 판 `cache/parse_rules/{doc}.json`(parse 가 쓴 바이트 그대로), LLM 판 `cache/parse_llm/{doc}.json`(늘),
+  `docs/{doc}/script.json` = LLM 판이 validate 를 통과하고 품질 지표가 뚜렷이 나쁘지 않으면(문제 수가 늘지 않고 score 가 0.03 넘게
+  떨어지지 않음) LLM 판, 아니면 규칙 판. 정답 표본에서 LLM 판이 모든 묶음에서 더 정확해 LLM 판을 기본으로 둔다(notes/llm_parse.md).
+  dropped·front 줄을 규칙 판보다 max(20, 5%) 넘게 늘린 판, 조각이 하나라도 실패한 판은 쓰지 않는다.
+  parser.name `sink-parse-llm`, parser.version `{VERSION}+{PROMPT_VERSION}`.
+- 지문 `cache/state/llm/{doc}.json`: 조립 버전·프롬프트 버전·모델·effort·그림 여부·parse 버전·lines sha1·규칙 판 sha1 + 결과
+  sha1(out_sha1). docs 의 script.json 이 out_sha1 과 다르면(예: `parse --force` 가 규칙 판을 다시 씀) 다시 놓는다(LLM 은 캐시라
+  바이트 동일). parse 는 지문이 같으면 건너뛰므로 LLM 판을 덮지 않는다.
+- 문제: `cache/problems/llm/{doc}.json` 에 LLM 판을 쓸 때 그 판의 품질 문제(detail 앞 `[LLM 판]`, 칸 parser), 실패 때 problem
+  other(kind llm_fail, 규칙 판 유지). review 는 문서마다 지금 쓰는 판의 품질 문제만 올린다(LLM 판이면 parse 단계 문제를 뺌).
+- review: LLM 판 문서는 catalog note 에 `parser:sink-parse-llm`(규칙 판이면 뗌), extract_quality 는 지금 판의 score.
+- `sinkprep all`: parse 뒤 review 앞. claude 가 없거나 실패해도 전체가 멈추지 않는다(pipeline.SOFT). all 에서는 캐시만 쓰고
+  (캐시에 없는 문서는 규칙 판, 구독 사용 없음) `--llm` 을 줄 때만 부른다. `sinkprep llm` 은 늘 부른다.
+- cache/llm 은 빈 캐시로 다시 부르면 결과가 조금 달라질 수 있다(같은 입력에도 모델 출력이 흔들림). 그래서 저장소에
+  `data/llm_cache.zip` 으로 묶어 넣는다(`tools/llm_cache_zip.py pack` = 같은 캐시면 같은 바이트, 계정 메타데이터 session_id·uuid·
+  credential_expires_at 뺌; 새 PC 에서는 `unpack` 뒤 `sinkprep all` 이 claude 를 부르지 않고 같은 결과). 화자 이름과 형식
+  프로필의 짧은 대본 인용이 들어 있다(사용자 결정 2026-11-13). `sinkprep llm` 으로 새로 부른 뒤에는 pack 해서 함께 커밋한다.
+  큰 실행 앞뒤 사본은 `backup/llm_cache_*.zip`(gitignore).
 
 ## 문제 기록
 단계마다 `util.set_problems(stage, key, [...])`. problem dict 칸: `level, doc_id, film_id, item_id, problem, score, detail, path`.

@@ -12,9 +12,10 @@ COMMANDS = {
     "ocr": ("sinkprep.ocr", "스캔·깨진 글자층 PDF OCR -> cache/ocr"),
     "lines": ("sinkprep.lines", "형식 통일 줄 -> docs/{doc_id}/lines.jsonl"),
     "parse": ("sinkprep.parse", "구조 파싱 -> docs/{doc_id}/script.json"),
+    "llm": ("sinkprep.llm_parse", "규칙 파서가 무너진 문서를 claude -p 로 다시 파싱(나아질 때만 script.json 교체)"),
     "review": ("sinkprep.review", "확인 필요 목록 -> qa/needs_review.csv"),
     "validate": ("sinkprep.validate", "스키마·의미 규칙 검사"),
-    "all": ("sinkprep.pipeline", "catalog→convert→ocr→lines→parse→review→validate"),
+    "all": ("sinkprep.pipeline", "catalog→convert→ocr→lines→parse→llm→review→validate"),
 }
 
 
@@ -27,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--limit", type=int, default=None, help="앞에서부터 N개 문서만")
         p.add_argument("--force", action="store_true", help="지문이 같아도 다시 만들기")
         p.add_argument("--workers", type=int, default=None, help="병렬 작업 수")
+        if name in ("llm", "all"):
+            p.add_argument("--images", action="store_true",
+                           help="(llm) OCR 줄이 있는 조각에 원본 쪽 그림도 함께 준다")
+        if name == "all":
+            p.add_argument("--llm", action="store_true",
+                           help="llm 단계에서 캐시에 없는 claude 호출도 한다(기본은 캐시만 써서 구독을 쓰지 않음)")
         p.add_argument("paths", nargs="*", help="(validate) 검사할 파일·폴더")
     return ap
 

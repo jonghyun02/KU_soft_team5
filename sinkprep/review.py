@@ -4,6 +4,8 @@
    script_lang, is_translation, extract_quality, status, 그리고 영화마다 is_primary 를 다시 고른다.
 2. 단계마다 남긴 문제(cache/problems/**)를 모아 qa/needs_review.csv 를 쓴다(심한 것부터).
    영화 ID 가 local_ 인 것(KMDb/TMDB 키 없음)은 '못 읽은 대본'이 아니므로 목록에 넣지 않는다(catalog 의 film_id 로 보임).
+3. llm 단계가 LLM 판(parser sink-parse-llm)을 script.json 으로 쓴 문서는 catalog note 에 'parser:sink-parse-llm' 을 붙이고,
+   품질 문제는 지금 쓰는 판의 것만 올린다(LLM 판이면 parse 단계=규칙 판 문제를 빼고 llm 단계 문제를, 아니면 그 반대).
 """
 from __future__ import annotations
 
@@ -60,16 +62,36 @@ def doc_info(doc: dict) -> dict:
     sp = paths.DOCS / doc_id / "script.json"
     rows = util.read_jsonl(lp)[1:] if lp.exists() else []
     info = {"n_lines": len(rows), "lang": detect_lang([r["text"] for r in rows]) if rows else "unknown",
-            "quality": 0.0, "has_script": False, "ocr_conf": None}
+            "quality": 0.0, "has_script": False, "ocr_conf": None, "parser": None}
     if sp.exists() and rows:
-        q = util.read_json(sp).get("quality") or {}
+        s = util.read_json(sp)
+        q = s.get("quality") or {}
         info["quality"] = float(q.get("score") or 0.0)
         info["has_script"] = True
+        info["parser"] = (s.get("parser") or {}).get("name")
     confs = [r["conf"] for r in rows if r.get("src") == "ocr" and r.get("conf") is not None]
     if confs:
         info["ocr_conf"] = sum(confs) / len(confs)
         info["quality"] = min(info["quality"], info["ocr_conf"]) if info["has_script"] else info["ocr_conf"]
     return info
+
+
+def note_with_parser(note: str, parser: str | None) -> str:
+    """catalog note 에 LLM 판을 쓰는 문서면 'parser:sink-parse-llm' 을 붙인다(규칙 판이면 뗌, 여러 번 돌려도 같음)."""
+    toks = [t for t in note.split(";") if t and not t.startswith("parser:")]
+    if parser and parser != "sink-parse":
+        toks.append(f"parser:{parser}")
+    return ";".join(toks)
+
+
+def current_parser(doc_id: str) -> str | None:
+    sp = paths.DOCS / doc_id / "script.json"
+    if not sp.exists():
+        return None
+    try:
+        return (util.read_json(sp).get("parser") or {}).get("name")
+    except (OSError, ValueError):
+        return None
 
 
 def _truthy(v) -> bool:
@@ -102,6 +124,7 @@ def finalize_catalog(rows: list[dict]) -> dict[str, dict]:
             "is_translation": is_tr,
             "extract_quality": f"{info['quality']:.3f}",
             "status": "parsed" if info["has_script"] else "pending",
+            "note": note_with_parser(d.get("note") or "", info["parser"]),
         }
     # 영화마다 대표 대본 다시 고르기
     films: dict[str, list[dict]] = defaultdict(list)
@@ -143,12 +166,21 @@ def collect_problems(rows: list[dict]) -> list[dict]:
     excluded = {d["doc_id"] for d in rows if d.get("status") == "excluded"}
     seen = set()
     out = []
-    for p in util.all_problems():
+    parser_of: dict[str, str | None] = {}
+    for stage, p in util.all_problems(with_stage=True):
         if p.get("level") == "film" and str(p.get("detail") or "").startswith("KMDb/TMDB"):
             continue
         doc_id = p.get("doc_id") or ""
         if doc_id in excluded or (doc_id and doc_id not in film_of):
             continue                       # 제외 문서, 또는 catalog 에 더는 없는 문서의 낡은 기록
+        if stage in ("parse", "llm") and doc_id:
+            # 품질 문제는 지금 docs/{doc}/script.json 으로 쓰는 판의 것만: LLM 판이면 parse 단계(규칙 판) 문제를 빼고,
+            # 규칙 판이면 llm 단계의 LLM 판 품질 문제를 뺀다(LLM 실패 기록 kind=llm_fail 은 늘 남김).
+            if doc_id not in parser_of:
+                parser_of[doc_id] = current_parser(doc_id)
+            is_llm = parser_of[doc_id] == "sink-parse-llm"
+            if (stage == "parse" and is_llm) or (stage == "llm" and not is_llm and p.get("kind") != "llm_fail"):
+                continue
         if _ocr_replaced(p, files_of.get(doc_id, [])):
             continue
         problem = p.get("problem") if p.get("problem") in SEVERITY else "other"

@@ -46,6 +46,14 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
+def write_bytes(path: Path, data: bytes) -> None:
+    _atomic_write_bytes(path, data)
+
+
+def sha1_bytes(data: bytes) -> str:
+    return hashlib.sha1(data).hexdigest()
+
+
 def write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     _atomic_write_bytes(path, text.encode(encoding))
 
@@ -83,12 +91,14 @@ def set_problems(stage: str, key: str, problems: list[dict]) -> None:
         p.unlink()
 
 
-def all_problems() -> list[dict]:
-    out: list[dict] = []
+def all_problems(with_stage: bool = False) -> list:
+    """모든 단계의 문제 목록. with_stage 면 (단계, 문제) 짝 목록."""
+    out: list = []
     if not paths.PROBLEMS.exists():
         return out
     for p in sorted(paths.PROBLEMS.glob("*/*.json")):
-        out.extend(read_json(p))
+        rows = read_json(p)
+        out.extend([(p.parent.name, x) for x in rows] if with_stage else rows)
     return out
 
 

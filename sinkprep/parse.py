@@ -24,7 +24,7 @@ from . import parse_layout as PL
 from . import parse_text as T
 
 STAGE = "parse"
-VERSION = "0.2.3"
+VERSION = "0.2.5"
 PARSER_NAME = "sink-parse"
 
 TH_TYPED = 0.85
@@ -1702,34 +1702,48 @@ class DocParser:
         return [self.L[i] for i in self.active[: self.fe]]
 
     def _quality(self, els: list[dict], dropped: list[dict]) -> dict:
-        total = len(self.rows)
-        nd = sum(len(d["lines"]) for d in dropped)
-        body = max(0, total - nd)
-        by = Counter()
-        for o in els:
-            by[o["type"]] += len(o["lines"])
-        nunk = by["unknown"]
-        typed = body - nunk
-        dl = [o for o in els if o["type"] == "dialogue"]
-        nospk = sum(1 for o in dl if not o["speakers"])
-        nempty = sum(1 for o in dl if not (o.get("text") or "").strip())
-        ninf = sum(1 for o in dl if o.get("speaker_inferred"))
-        confs = [ln.conf for ln in self.L if ln.conf is not None]
-        tr = typed / body if body else 0.0
-        dr = by["dialogue"] / body if body else 0.0
-        ur = nunk / body if body else 0.0
-        sf = nospk / len(dl) if dl else 0.0
-        ef = nempty / len(dl) if dl else 0.0
-        score = tr * min(1.0, dr / 0.25) * (1.0 - min(1.0, sf)) * (1.0 - min(1.0, ef))
-        if confs:
-            score *= min(1.0, statistics.mean(confs) / 0.85)
-        notes = list(self.notes)
-        notes.append("요소 줄 수: " + ", ".join(f"{k} {v}" for k, v in by.most_common()) + f"; dropped {nd}")
-        if confs:
-            notes.append(f"OCR 평균 conf {statistics.mean(confs):.3f}")
-        return {"lines": total, "typed_ratio": round(tr, 4), "dialogue_ratio": round(dr, 4),
-                "unknown_ratio": round(ur, 4), "speakerless_dialogue": nospk, "empty_dialogue": nempty,
-                "inferred_speaker": ninf, "score": round(max(0.0, min(1.0, score)), 4), "notes": notes}
+        return compute_quality(self.rows, els, dropped, self.notes)
+
+
+def is_reaction(o: dict) -> bool:
+    """한 줄 '찬이 : (고개를 끄덕인다)' 처럼 말 없이 괄호 지시만 있는 반응(원래 말이 없으므로 '말 없는 대사' 가 아님).
+    이름에 붙은 괄호('광해(버럭)')만 있는 이름 줄은 반응이 아니다(말이 지문으로 갔을 수 있음)."""
+    raw = o.get("speaker_raw") or ""
+    if not raw:
+        return False                        # 이름 없는 홀로 괄호 줄은 반응이 아님(라벨 오류일 수 있어 그대로 셈)
+    return len(o.get("lines") or []) == 1 and any(p.get("text") and p["text"] not in raw for p in o.get("paren") or [])
+
+
+def compute_quality(rows: list[dict], els: list[dict], dropped: list[dict], notes: list[str]) -> dict:
+    """script.json quality 칸(명세 4.4.2). 규칙 파서와 LLM 파서(llm_parse)가 같은 함수로 센다."""
+    total = len(rows)
+    nd = sum(len(d["lines"]) for d in dropped)
+    body = max(0, total - nd)
+    by = Counter()
+    for o in els:
+        by[o["type"]] += len(o["lines"])
+    nunk = by["unknown"]
+    typed = body - nunk
+    dl = [o for o in els if o["type"] == "dialogue"]
+    nospk = sum(1 for o in dl if not o["speakers"])
+    nempty = sum(1 for o in dl if not (o.get("text") or "").strip() and not is_reaction(o))
+    ninf = sum(1 for o in dl if o.get("speaker_inferred"))
+    confs = [r.get("conf") for r in rows if r.get("conf") is not None]
+    tr = typed / body if body else 0.0
+    dr = by["dialogue"] / body if body else 0.0
+    ur = nunk / body if body else 0.0
+    sf = nospk / len(dl) if dl else 0.0
+    ef = nempty / len(dl) if dl else 0.0
+    score = tr * min(1.0, dr / 0.25) * (1.0 - min(1.0, sf)) * (1.0 - min(1.0, ef))
+    if confs:
+        score *= min(1.0, statistics.mean(confs) / 0.85)
+    notes = list(notes)
+    notes.append("요소 줄 수: " + ", ".join(f"{k} {v}" for k, v in by.most_common()) + f"; dropped {nd}")
+    if confs:
+        notes.append(f"OCR 평균 conf {statistics.mean(confs):.3f}")
+    return {"lines": total, "typed_ratio": round(tr, 4), "dialogue_ratio": round(dr, 4),
+            "unknown_ratio": round(ur, 4), "speakerless_dialogue": nospk, "empty_dialogue": nempty,
+            "inferred_speaker": ninf, "score": round(max(0.0, min(1.0, score)), 4), "notes": notes}
 
 
 def _shot_slug(rest: str) -> bool:
