@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import re
 import statistics
 import sys
@@ -24,7 +25,7 @@ from . import parse_layout as PL
 from . import parse_text as T
 
 STAGE = "parse"
-VERSION = "0.2.5"
+VERSION = "0.3.1"
 PARSER_NAME = "sink-parse"
 
 TH_TYPED = 0.85
@@ -46,7 +47,8 @@ _RX_QUOTE = re.compile(r"^([^\s\"“”'‘’()]{1,12}(?:\s*\([^()]{1,20}\))?)\
 _RX_ANGLE = re.compile(r"^<\s*([^<>]{1,20}?)\s*>\s*[:：]?\s*(\S.*)$")
 _RX_SPACE1 = re.compile(r"^(\S{1,15}?(?:\s*\([^()]{1,20}\))?)\s+(\S.*)$")
 # 촬영 크기 표기('영일 cu', '주희 : bs', '영일, 주희 fs'): 이름 뒤가 이것으로 시작하면 대사가 아니라 화면 설명
-_RX_SHOT = re.compile(r"^(?:e?cu|bcu|mcu|bs|ms|mls|fs|ws|ls|els|ks|pov|[1-9]s|full\s*shot)\s*(?:[,/]\s*\S.*)?$",
+_RX_SHOT = re.compile(r"^(?:e?cu|bcu|mcu|bs|ms|mls|fs|ws|ls|els|ks|pov|[1-9]s|full\s*shot"
+                      r"|e?\.?c\.u\.?|[bm]\.c\.u\.?|[bmfwlkc]\.s\.?|m\.l\.s\.?|e\.l\.s\.?)\s*(?:[,/]\s*\S.*)?$",  # '영희 B.S'
                       re.IGNORECASE)
 # 엑셀 표 대본 행: 첫 칸이 씬 번호, 둘째 칸이 장소('1⇥웨딩거리⇥영일 cu')
 _RX_XLS_HEAD = re.compile(r"^(\d{1,3}[A-Za-z]?)(?:\.0)?\t([^\t]{1,40})(?:\t.*)?$")
@@ -60,10 +62,15 @@ _RX_BULLET = re.compile(r"^([*＊※●○◆◇■□▶·\-])[ \t]*(?=\S)")
 _RX_LSP2 = re.compile(r"^([가-힣])[ \t]([가-힣])(?=[ \t(]|$)[ \t]*(.*)$")
 _RX_LSP3 = re.compile(r"^([가-힣])[ \t]([가-힣])[ \t]([가-힣])(?=[ \t(]|$)[ \t]*(.*)$")
 _RX_LSP_LAT = re.compile(r"^([A-Z])[ \t]([A-Z])(?:[ \t]([A-Z]))?(?=[ \t(]|$)[ \t]*(.*)$")
+_RX_SINGLE_TAB = re.compile(r"^[가-힣]\t(?![가-힣](?:[ \t(]|$))\S")
 _LSP_STOP = set("이 그 저 또 한 두 세 네 몇 첫 새 옛 온 각 매 전 후 안 밖 앞 뒤 위 왜 뭐 예 응 다 더 덜 꼭 잘 못 좀 막 곧 늘 "
                 "볼 할 갈 올 될 줄 알 쓸 살 아 어 오 우 에 음 흠 허 하 호 히 후 와 야 자 으 흐 쾅 쿵 탁 툭 퍽 펑 휙 쿡 킥 똑 딱 "
                 "쏴 촥 착 척 뚝 뻥 꽝 빵 삐 띠 띵 딩 둥 쨍 쩍 툭 쓱 슥 휘 훅 핑 팍 탕 텅 쿨 컥 켁 큭".split())
 _RX_HOWPREFIX = re.compile(r"^(소리|목소리|E|NA|Na|N|V\.?O\.?|O\.?S\.?)\s*>\s*")
+# 괄호에 든 이름 칸의 '이름+소리': '(영새소리)', '(상두 목소리)', '(상두off)'
+_RX_PNAME_VOICE = re.compile(r"(.+?)\s*(?:의\s*)?(?:목소리|소리|[Oo][Ff][Ff]|E)")
+# 괄호에 든 이름 줄의 오른쪽이 말이 아니라 소리 묘사인 꼴: '개를 어르는 소리.', '비명 소리.', '울음소리.'
+_RX_SOUND_DESC = re.compile(r"(?:[가-힣]+[는은운]|울음|비명|웃음|신음|한숨|기침|숨|발|발자국|노크|총|구두)\s*소리\s*[.…]*$")
 _SURNAMES = set("김이박최정강조윤장임한오서신권황안송류전홍고문양손배백허유남심노하곽성차주우구민진나지엄채원천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은편용예봉경사부가복태목형피두감음빈동온호범좌팽승간상갈단견당화창")
 _SPACE_STOP = set("갑자기 다시 그때 그 때 이때 이 때 순간 잠시 이윽고 한편 문득 결국 조용히 천천히 그리고 하지만 그러나 계속 모두 함께 "
                   "역시 이미 아직 또 또다시 다들 서로 멀리 가까이 그대로 마침 바로 곧 한참 점점 슬며시 살며시 가만히 여전히 오직 "
@@ -267,9 +274,15 @@ class DocParser:
         c2: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
         c3: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
         lat: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
+        # 한 글자 이름 + 탭 + (한 글자 낱말이 아닌) 말: '홍⇥무슨 말씀하시는 거예요'
+        single = Counter(L[i].t[0] for i in active if _RX_SINGLE_TAB.match(L[i].t) and "head" not in L[i].extra)
         for i in active:
             t = L[i].t
             if "head" in L[i].extra:
+                continue
+            # '홍⇥이 선생님은 …'(연애의 목적 fm55036): 한 글자 이름 '홍' 뒤의 탭 + '이' 로 시작하는 말이지 띄운 이름 '홍 이' 가
+            # 아니다. 첫 글자 뒤가 탭이고 그 글자가 이 문서에서 '홍⇥무슨 말씀…' 처럼 한 글자 이름으로 3번 이상 쓰이면 뺀다.
+            if t[1:2] == "\t" and single[t[0]] >= 3:
                 continue
             m = _RX_LSP3.match(t)
             if m and m.group(4).strip() and m.group(1) not in _LSP_STOP and len({m.group(1), m.group(2)}) == 2:
@@ -357,7 +370,14 @@ class DocParser:
             right = right.strip().lstrip(":\t ").strip()
             m = re.fullmatch(r"\(([^()]{1,10})\)", left)
             if m and right and T.how_of([m.group(1)]):
+                # '(영새소리)⇥…', '(상두 목소리)⇥…': 이름 + 소리 꼴이면 괄호에 든 이름 후보(_paren_names 가 이름표로 거르고,
+                # 이름표에 없으면 cue 로 되돌린다)
+                mv = _RX_PNAME_VOICE.fullmatch(m.group(1).strip())
+                if mv and len(mv.group(1).strip()) >= 2 and self._speaker_ok(mv.group(1).strip(), "tab"):
+                    return left, right, "pname"
                 return left, right, "cue"              # '(소리) ⇥ 정수씨, …' 이름 없이 들리는 방식만 적힌 대사
+            if m and right and self._speaker_ok(m.group(1).strip(), "tab"):
+                return left, right, "pname"            # '(영민) ⇥ 차를 저렇게…' 괄호에 든 이름. 이름표로 거른다(_paren_names)
             if re.fullmatch(r"\d{1,4}[A-Z]?", left) and _shot_slug(right):
                 return None                            # '10⇥SHOT - PODIUM': 촬영 번호 줄은 대사가 아니다
             if left and right and len(left) <= 30 and self._speaker_ok(left, "tab"):
@@ -480,6 +500,10 @@ class DocParser:
             keep = [i for i in acc if L[i].extra["head"][0] not in sstyles or i in series]
             acc = sorted(set(keep) | series, key=lambda i: self.L[i].n)
             self.notes.append(f"씬 머리: 들여쓰거나 가운데 놓인 번호 씬 머리 묶음 {len(series)}개를 받음")
+        colon = self._colon_heads(cands, acc, lead_int)
+        if colon:
+            acc = sorted(set(acc) | set(colon), key=lambda i: self.L[i].n)
+            self.notes.append(f"씬 머리: 쌍점이 든 번호 씬 머리 {len(colon)}개를 받음(받아들인 씬 머리와 같은 칸, 빈 번호를 차례대로 메움)")
         # 번호가 앞쪽에서 1 로 다시 시작하고 그 앞 번호들 사이가 아주 짧으면(줄 몇 개) 인물표·설정 번호(4.4.3 #10)
         nums = [(i, lead_int(L[i].extra["head"][1])) for i in acc
                 if L[i].extra["head"][1] and re.fullmatch(r"\d+", L[i].extra["head"][1])]
@@ -584,11 +608,51 @@ class DocParser:
             return False
         return not (re.search(r"[.?!…~]$", rest) and not re.search(r"(?:낮|밤|DAY|NIGHT)\s*[).]?$", rest))
 
-    def _numdot_shape(self, ln, h) -> bool:
+    def _colon_heads(self, cands, acc: list[int], lead_int) -> list[int]:
+        """쌍점이 든 번호 씬 머리('6. 망원동 골목길 : 오프닝 시퀀스 / 오후-밤', '21. 영민의 거처 : 정원 / 밤')는 '이름 : 대사' 와
+        모양이 같아 _numdot_shape 가 뺀다(따옴표로 시작하는 '38. ‘영민을 잡는 중호’ 시퀀스 : …' 도). 그 문서가 받아들인
+        번호 씬 머리(5개 이상)들과 같은 x 에 놓이고, 번호가 앞뒤로 받아들인 씬 머리 사이의 빈 번호를 차례대로 메우면
+        (앞 번호보다 1~3 크고 뒤 번호보다 작음) 씬 머리다. 번호 붙은 대사 줄('3. 태백산: 안 가세요?', 반칙왕 녹취)은
+        받지 않는다: 쌍점 앞이 그 문서에서 한 줄 표기의 화자로 나오는 이름이거나, 쌍점 뒤가 말처럼 생겼거나 시간 꼬리 없이
+        문장부호로 끝나면 뺀다. 쌍점 없이 따옴표로 시작하는 줄은 시간 꼬리('… 교차 / 낮')가 있어야 받는다."""
+        L = self.L
+        fam = [i for i in acc if L[i].extra["head"][0] in ("numdot", "numdot_t") and lead_int(L[i].extra["head"][1]) is not None]
+        if len(fam) < 5:
+            return []
+        hx = statistics.median(L[i].rx for i in fam)
+        seq = sorted((i, lead_int(L[i].extra["head"][1])) for i in fam)     # (줄 차례, 번호): 받아들인 씬 머리들
+        speakers = {T.name_key(T.split_speaker(ln.extra["inl"][0])[0]) for ln in L
+                    if "inl" in ln.extra and ln.extra["inl"][2] in ("tab", "colon", "angle", "lsp", "bracket")}
+        got: list[int] = []
+        for i, h in cands:
+            ln = L[i]
+            if h[0] != "numdot" or self._numdot_shape(ln, h) or not self._numdot_shape(ln, h, colon_ok=True):
+                continue
+            v = lead_int(h[1])
+            if v is None or abs(ln.rx - hx) > self.tol2:
+                continue
+            left, colon, right = h[2].partition(":")
+            timed = bool(T.split_place_time(h[2])[1])
+            if colon and (T.name_key(T.split_speaker(left)[0]) in speakers or ko_style(right) >= 1.0
+                          or re.search(r"[.?!…~]\s*$", right) and not timed):
+                continue                    # '3. 태백산: 안 가세요?', '26. 노지심: 뒤에, 뒤에, 뒤에...'
+            if not colon and not timed:
+                continue                    # 따옴표로 시작하는 번호 줄('10. ‘젓가락 행진곡’으로 넘어간다.')은 시간 꼬리가 있어야
+            k = bisect.bisect_left(seq, (i, -1))
+            lo = seq[k - 1][1] if k else None
+            hi = seq[k][1] if k < len(seq) else None
+            if (lo is None or 0 < v - lo <= 3) and (hi is None or v < hi) and (lo is not None or 0 < hi - v <= 3):
+                seq.insert(k, (i, v))
+                got.append(i)
+        return got
+
+    def _numdot_shape(self, ln, h, colon_ok: bool = False) -> bool:
         rest = h[2]
         if not rest or len(rest) > 80:
             return False
-        if not (rest[0].isalpha() or rest[0] in "<[#＃") or re.match(r"^[가-힣A-Za-z0-9 ]{1,12}\s*:\s*\S", rest):
+        if not (rest[0].isalpha() or rest[0] in "<[#＃" or colon_ok and rest[0] in "‘’'\"“”"):
+            return False
+        if not colon_ok and re.match(r"^[가-힣A-Za-z0-9 ]{1,12}\s*:\s*\S", rest):
             return False
         if re.search(r"(?:[ㄴ는]다|있다|없다|했다|한다|이다)\.?$", rest) and len(rest) > 25:
             return False
@@ -683,17 +747,20 @@ class DocParser:
         body = [i for i in act if i not in self.heads]
         inl_cnt: Counter = Counter()
         sep_cnt: Counter = Counter()
+        n_speech = 0                        # 같은 줄에 말이 있는 '이름⇥대사'·'이름 : 대사' 줄 수
         for i in body:
             ex = L[i].extra
             if "head" in ex and i in self.heads or "inl" not in ex:
                 continue
             spk, rest, sep = ex["inl"]
-            if sep in ("space", "cue"):
+            if sep in ("space", "cue", "pname"):
                 continue
             core = T.split_speaker(spk)[0]
             for p in T.split_multi(core):
                 inl_cnt[T.name_key(p)] += 1
             sep_cnt[sep] += 1
+            if sep in ("tab", "colon") and not _wordless(rest):
+                n_speech += 1
         # 이름 줄 모양: 짧은 이름만 있는 줄 + 다음 줄이 들여쓴 줄
         blk_cnt: Counter = Counter()
         blk_x: list[float] = []
@@ -701,6 +768,7 @@ class DocParser:
         self.nxt = nxt
         self.prv = {i: (act[k - 1] if k else None) for k, i in enumerate(act)}
         shape: dict[int, tuple] = {}
+        held: dict[int, tuple] = {}
         title_cnt: Counter = Counter()
         flat_cnt: Counter = Counter()
         flat_shape: dict[int, tuple] = {}
@@ -739,6 +807,9 @@ class DocParser:
             cen = self.centered and ln.rx > self.lay.get("M", 0.0) + 0.15 and (nj.dy is None or nj.dy < 1.6) \
                 and nj.pk == ln.pk
             if indented and (nj.cls in ("I", "R") or cen):
+                if "inl" in ex and ex["inl"][2] in ("tab", "colon") and ex["inl"][1].strip() and _wordless(ex["inl"][1]):
+                    held[i] = (kind, core, tails, paren_name)      # '영민⇥.......', '미진⇥(한숨)': 아래에서 정한다
+                    continue
                 shape[i] = (kind, core, tails, paren_name)
                 if not paren_name:
                     for p in T.split_multi(core):
@@ -750,6 +821,26 @@ class DocParser:
                     and not T.name_like(T.split_speaker(nj.f)[0], block=True):
                 flat_shape[i] = (kind, core, tails, False)
                 flat_cnt[T.name_key(core)] += 1
+        # 말 없는 차례('영민⇥.......', '미진⇥(한숨)')는 다음 줄이 들여쓴 줄이면 이름 줄처럼 보인다. 같은 줄에 말이 있는
+        # 한 줄 표기('이름⇥대사')가 이름 줄보다 훨씬 많은(4배 이상, 20줄 이상) 문서에서는 한 줄 대사로 둔다: 이름은
+        # speaker_raw, 점은 text, 괄호는 paren 으로 간다(다음 줄이 들여쓴 줄이 아닐 때와 같은 결과). 이름 줄 문서에서는
+        # 전처럼 이름 줄('철수⇥(웃으며)' 아래에 말)이다.
+        one_line_doc = False
+        n_held = 0
+        if held:
+            n_pure = sum(1 for sh in shape.values() if sh[0] in ("name", "title"))
+            if n_speech >= max(20, 4 * n_pure):
+                one_line_doc = True
+                n_held = sum(len(T.split_multi(sh[1])) for sh in held.values() if sh[0] == "name" and not sh[3])
+                self.notes.append(f"대사 표기: 말 없이 점·괄호만 있는 한 줄 차례 {len(held)}줄은 이름 줄이 아니라 한 줄 대사")
+            else:
+                for i, sh in held.items():
+                    shape[i] = sh
+                    if not sh[3]:
+                        for p in T.split_multi(sh[1]):
+                            (blk_cnt if sh[0] == "name" else title_cnt)[T.name_key(p)] += 1
+                        if sh[0] == "name":
+                            blk_x.append(L[i].rx)
         # 첫 글자만 대문자인 이름 줄: 같은 이름이 세 번 이상, 이름 칸 x 가 한곳일 때만
         title_wait: dict[int, tuple] = {}
         if title_cnt:
@@ -776,10 +867,16 @@ class DocParser:
         if not self.centered and self.para_spacing:
             self._collapsed_cues(body, shape, blk_cnt, blk_x)
         n_blk = sum(blk_cnt.values())
-        self.block_mode = n_blk >= max(8, 0.02 * len(body))
+        # 한 줄 표기 문서로 정한 문서(위)는 이름 줄 문서가 아니다(block_mode 끔): 앞 화자를 이어받지 않는다(_build).
+        self.block_mode = n_blk >= max(8, 0.02 * len(body)) and not one_line_doc
+        # 다만 말 없는 차례까지 이름 줄 모양으로 세면 2% 를 넘는 한 줄 표기 문서(name_line_shapes)는 그 밖의 이름 줄 처리를
+        # 전과 같이 한다: 이름 칸(말 없는 차례가 놓인 칸) 근처의 모르는 이름 줄 받기('상상 속의 수완' + 아래 줄 말),
+        # 이름을 못 읽은 이름 칸 줄을 화자 없는 대사로 두기, 공백 하나 표기를 보수적으로 받기(_inline_ok).
+        self.name_line_shapes = one_line_doc and n_blk + n_held >= max(8, 0.02 * len(body))
+        held_lines = set(held) if one_line_doc else set()
         # 들여쓰기 없는 문서(txt): 빈 줄 뒤 이름 줄 + 바로 아래 대사
         self.flat_mode = False
-        if not self.block_mode and flat_cnt:
+        if not (self.block_mode or self.name_line_shapes) and flat_cnt:
             good = {k for k, c in flat_cnt.items() if c >= 3}
             n_flat = sum(flat_cnt[k] for k in good)
             if n_flat >= max(10, 0.03 * len(body)):
@@ -801,7 +898,29 @@ class DocParser:
             if c >= 2 or small:
                 vocab[k] = vocab.get(k, 0) + c
         self.vocab = vocab
-        self.name_x = statistics.median(blk_x) if blk_x else None
+        name_xs = blk_x + [L[i].rx for i in held_lines if held[i][0] == "name" and not held[i][3]]
+        self.name_x = statistics.median(name_xs) if name_xs else None
+        self._paren_names(body, inl_cnt + blk_cnt)
+        # 이름 칸: 이름표에 있는 이름의 강한 한 줄 표기(탭·쌍점 등) 줄이 50줄 이상이고 그 95% 이상이 한 x 묶음에 놓이면
+        # 그 묶음의 (왼쪽 끝, 오른쪽 끝). 확신 낮은 갈래의 줄은 이 칸을 본다(_inline_ok): 이름 뒤 공백 하나 표기는 이 칸에
+        # 놓인 줄만, 이름표에 없는 이름의 탭·쌍점은 이 칸 밖의 지문 칸에 놓였으면 대사 시작으로 받지 않는다. 지문 여백의
+        # '중호 앞으로 … 들이미는 최형사.', '아게하 탁자 앞 의자에 앉고' 는 인물 이름으로 시작하는 지문이다. x 가 흔들리는
+        # OCR 문서는 묶음이 넓어져 덜 거른다.
+        self.turn_col: tuple[float, float] | None = None
+        tx = sorted(L[i].rx for i in body if "inl" in L[i].extra
+                    and L[i].extra["inl"][2] in ("tab", "colon", "angle", "lsp", "bracket")
+                    and all(T.name_key(p) in vocab for p in T.split_multi(T.split_speaker(L[i].extra["inl"][0])[0])))
+        if len(tx) >= 50:
+            tol = self.lay.get("tol", 0.008)
+            runs = [[tx[0]]]
+            for x in tx[1:]:
+                if x - runs[-1][-1] <= tol:
+                    runs[-1].append(x)
+                else:
+                    runs.append([x])
+            top = max(runs, key=len)
+            if len(top) >= 0.95 * len(tx):
+                self.turn_col = (top[0], top[-1])
         # 공백 하나로 붙은 이름('재혁 한밤중에…'): 다른 표기가 드물 때만 줄 첫 낱말 빈도로 이름을 찾는다
         sp_cnt: Counter = Counter()
         sp_style: dict[str, list[float]] = defaultdict(list)
@@ -851,14 +970,16 @@ class DocParser:
                 if keys[0] in vocab:
                     self.blk_ok[i] = sh
                 continue
-            if all(k in vocab for k in keys) or (near_x and self.block_mode):
+            if all(k in vocab for k in keys) or (near_x and (self.block_mode or self.name_line_shapes)):
                 self.blk_ok[i] = sh
         # 이름 줄인데 대사 줄이 빠진 경우(OCR 누락): 이름 칸 x 에 있는 자주 나오는 이름
-        if self.block_mode and self.name_x is not None:
+        if (self.block_mode or self.name_line_shapes) and self.name_x is not None:
             for i in body:
                 ln = L[i]
                 if i in self.blk_ok or i in self.heads or len(ln.f) > 25 or ln.cls != "I":
                     continue
+                if one_line_doc and ln.extra.get("inl") and ln.extra["inl"][2] in ("tab", "colon"):
+                    continue                    # 한 줄 표기 문서의 '영민⇥.......' 은 한 줄 대사다(이름 줄이 아님)
                 if abs(ln.rx - self.name_x) > max(0.02, 1.5 * self.tol2):
                     continue
                 core, tails = T.split_speaker(ln.f)
@@ -906,6 +1027,24 @@ class DocParser:
                         chain += 1
                 if at and chain >= 0.7 * len(at):
                     self.cont_cols.append((h, ht))
+        # 지문 앞에 빈 줄을 두는 문서인가: 한 줄 표기 대사 바로 다음의 더 들여쓴 줄 가운데 글 모양이 뚜렷한 지문인 줄이
+        # 거의 다(90% 이상, 10줄 이상) 빈 줄 뒤에 놓이면, 빈 줄 없이 붙은 줄은 앞 대사의 이어짐이다(_cont).
+        self.tight_cont = False
+        if inl and self.para_spacing and self.lang == "ko":
+            gap_n = tight_n = 0
+            for i in inl:
+                j = nxt[i]
+                if j is None or j in inl or j in self.heads or L[j].pk != L[i].pk or L[j].dy is None \
+                        or L[j].rx <= L[i].rx + self.tol2 or ko_style(L[j].f) > -1.5:
+                    continue
+                if L[j].dy >= 1.5:
+                    gap_n += 1
+                elif L[j].dy < 1.3:
+                    tight_n += 1
+            self.tight_cont = gap_n >= 10 and tight_n <= 0.1 * (gap_n + tight_n)
+            if self.tight_cont:
+                self.notes.append(f"대사 이어짐: 지문 앞에 빈 줄을 두는 문서(대사 다음 지문 {gap_n + tight_n}줄 중 붙여 쓴 것 "
+                                  f"{tight_n}줄): 대사 바로 아래 붙여 쓴 들여쓴 줄은 앞 대사의 이어짐")
         modes = []
         if self.block_mode:
             modes.append(f"이름 줄 {n_blk}")
@@ -917,11 +1056,16 @@ class DocParser:
                           + f"; 지문 여백 x={self.lay.get('M')}, 단계 {self.lay.get('levels')[:6]}"
                           + (f", 쪽 밀림 맞춤 {self.lay.get('shifted_pages')}쪽" if self.lay.get("shifted_pages") else ""))
         # 이름 없는 대사 칸 줄(이름 줄 문서에서 지문 뒤 바로 대사 칸에 놓인 줄): 화자 없는 대사로 시작
+        # 한 줄 표기 문서로 정한 문서(말 없는 차례까지 세면 이름 줄 모양이 2% 를 넘던 문서)도 전처럼 한다: 말 없는 차례
+        # 다음 줄이 놓이는 칸(= 이름 칸)에 지문 뒤 바로 놓였는데 이름을 못 읽은 줄('닭 상인 요거?')은 화자 없는 대사.
+        # 이 문서들에서는 앞 화자를 이어받지 않는다(_build: 제 이름이 따로 적힌 줄이라 이어받으면 틀린다).
         self.spkless: set[int] = set()
         self.dlg_x = None
-        if self.block_mode:
-            dx = [L[nxt[i]].rx for i, sh in self.blk_ok.items() if sh[0] == "name" and nxt[i] is not None
-                  and not L[nxt[i]].f.startswith("(")]
+        cue_lines = [i for i, sh in self.blk_ok.items() if sh[0] == "name"] if self.block_mode or self.name_line_shapes else []
+        if self.name_line_shapes:
+            cue_lines += [i for i in held_lines if held[i][0] == "name"]
+        if cue_lines:
+            dx = [L[nxt[i]].rx for i in cue_lines if nxt[i] is not None and not L[nxt[i]].f.startswith("(")]
             if dx:
                 self.dlg_x = statistics.median(dx)
                 for i in body:
@@ -935,6 +1079,52 @@ class DocParser:
                     if pl.cls in ("M", "L") and p not in self.heads and pl.file == ln.file \
                             and "trans" not in ln.extra and "onscr" not in ln.extra:
                         self.spkless.add(i)
+
+    def _paren_names(self, body: list[int], seen: Counter) -> None:
+        """괄호에 든 이름 칸 '(영민)⇥차를 저렇게 대면 어떡해요?'(화면 밖 목소리·전화 상대, 추격자): 괄호 안이 이 문서의
+        이름표에 있는 인물일 때만 그 인물의 대사(how=off)로 받는다. '(영새소리)' 처럼 이름 뒤에 소리·목소리가 붙은 꼴도.
+        '(웃으며)⇥대사' 같은 연기 지시 줄은 이름표에 없어 걸러진다. 그런 줄이 8개 이상이면 이 표기가 자리 잡은 문서로
+        보고, 같은 칸에 놓인 덜 나온 이름도 받는다: 다른 곳에서 한 번이라도 화자로 적혔거나(seen: 탭·쌍점·이름 줄),
+        지문에 인물로 나오는(토씨·쉼표가 붙은 꼴로 2번 이상) 이름."""
+        L = self.L
+        self.pname_ok: dict[int, str] = {}
+        cands = [(i, L[i].extra["inl"][0].strip()[1:-1].strip()) for i in body
+                 if "inl" in L[i].extra and L[i].extra["inl"][2] == "pname"]
+        if not cands:
+            return
+        rest: list[tuple[int, str]] = []
+        for i, x in cands:
+            m = _RX_PNAME_VOICE.fullmatch(x)
+            # '(부인)⇥울음소리.', '(일본인)⇥개를 어르는 소리.': 오른쪽이 소리 묘사면 그 인물의 말이 아니라 지문이다
+            # (앞 대사에 잇지도 않는다: _cont). '(영민)⇥그게 무슨 소리.' 같은 말은 꾸밈 꼴이 달라 걸리지 않는다.
+            if len(L[i].extra["inl"][1]) <= 25 and _RX_SOUND_DESC.search(L[i].extra["inl"][1]):
+                L[i].extra["sound_desc"] = True
+                continue
+            if T.name_key(x) in self.vocab:
+                self.pname_ok[i] = x
+            elif m and T.name_key(m.group(1)) in self.vocab:
+                self.pname_ok[i] = m.group(1).strip()
+            else:
+                rest.append((i, x))
+        n1 = len(self.pname_ok)
+        if n1 >= 8 and rest:
+            col = statistics.median(L[i].rx for i in self.pname_ok)
+            text = "\n".join(L[i].f for i in body)
+            for i, x in rest:
+                if abs(L[i].rx - col) > self.tol2 or " " in x or T.lang_of([x]) or T.match_transition(x) \
+                        or T.match_onscreen(x):
+                    continue
+                if seen.get(T.name_key(x)) or len(re.findall(r"(?<![가-힣A-Za-z0-9])" + re.escape(x)
+                                                              + r"(?=[이가은는의와과,])", text)) >= 2:
+                    self.pname_ok[i] = x
+        # 이름표에 없는 '(총소리)⇥…', '(목소리)⇥…' 는 전처럼 들리는 방식만 적힌 대사(cue)
+        for i, x in cands:
+            if i not in self.pname_ok and T.how_of([x]):
+                spk, right, _ = L[i].extra["inl"]
+                L[i].extra["inl"] = (spk, right, "cue")
+        if self.pname_ok:
+            self.notes.append(f"대사 표기: 괄호에 든 이름 (이름)⇥대사 {len(self.pname_ok)}줄(그 인물의 화면 밖 목소리, off"
+                              + (f"; 이름표에 없는 이름 {len(self.pname_ok) - n1}줄 포함" if len(self.pname_ok) > n1 else "") + ")")
 
     def _collapsed_cues(self, body: list[int], shape: dict, blk_cnt: Counter, blk_x: list[float]) -> None:
         """대사 칸이 지문 여백으로 눌린 영어 대본(The Graduate, Apocalypse Now, The Last Samurai): 대문자 이름 줄 아래
@@ -1003,6 +1193,8 @@ class DocParser:
         spk, rest, sep = sp
         if sep == "cue":
             return self.inline_mode or self.block_mode or len(self.active) < 200
+        if sep == "pname":
+            return i in self.pname_ok
         core = T.split_speaker(spk)[0]
         keys = [T.name_key(p) for p in T.split_multi(core)]
         if sep == "space":
@@ -1010,14 +1202,46 @@ class DocParser:
                 return False
             if self.lang == "ko" and ko_style(rest) <= -1.5 and not rest.startswith("("):
                 return False
-            if not all(k in self.space_vocab for k in keys) and self.block_mode:
+            if not all(k in self.space_vocab for k in keys) and (self.block_mode or self.name_line_shapes):
                 return False
-            return True
+            return self._at_turn_col(ln) or self._voice_cue(spk, rest)
         if all(k in self.vocab for k in keys):
             return True
         if sep in ("tab", "colon") and self.inline_mode and len(core) <= 12:
-            return True
+            # 이름표에 없는 이름의 탭·쌍점: 이름 칸 밖이어도 받되(다른 칸에 적힌 단역 '진행자⇥…'), 지문이 놓이는 칸
+            # (지문 여백과 그 왼쪽, 씬 머리 바로 다음 줄 칸)에 있는 줄은 받지 않는다('13⇥서부역 무료급식소⇥실외/아침').
+            # 이름에 들리는 방식 꼬리표가 붙었으면 어느 칸이든 받는다('아나운서(V.O)⇥표절 논란으로 …')
+            if self._at_turn_col(ln) or T.how_of([t for t in T.split_speaker(spk)[1] if len(t) <= 8]):
+                return True
+            if ln.cls in ("M", "L"):
+                return False
+            return not (self.act_x is not None and abs(ln.rx - self.act_x) <= 2 * self.lay.get("tol", 0.008))
         return False
+
+    def _voice_cue(self, spk: str, rest: str) -> bool:
+        """이름 뒤 공백 하나 표기의 줄이 이름 칸 밖에 놓였어도 대사 시작으로 볼 만한 표시가 있나.
+        이름 바로 뒤가 들리는 방식 표시('찬식(off) 따님이 …', '963 (NAR) 항상 …', '영훈 (소리)엄마!')이거나 이름 줄의
+        꼬리표뿐이면('크림 나레이션', 'GOLLUM O.S..') 대사다. 연기 지시 괄호면 그 뒤가 말투일 때만
+        ('할아버지 (다리를 주무르며) 몸에 기온이 … 하는디...'. '료양키 (유민 갱조직의 왕) 매서운 눈동자를 …' 는 인물 소개)."""
+        tails = T.split_speaker(spk)[1]
+        m = re.match(r"^\(([^()]{1,20})\)\s*(.*)$", rest)
+        lead = tails + ([m.group(1)] if m else [])
+        if any(len(t) <= 8 and T.how_of([t]) for t in lead):
+            return True
+        after = m.group(2) if m else rest
+        if lead:
+            return bool(after) and self.lang == "ko" and ko_style(after) >= 0.5
+        bare = rest.strip(" .()")
+        return 0 < len(bare) <= 8 and " " not in bare and bool(T.how_of([bare]))
+
+    def _at_turn_col(self, ln) -> bool:
+        """문서에 이름 칸(_vocab 의 turn_col)이 있으면 그 칸에 놓인 줄인가. 이름 칸이 없는 문서는 늘 참.
+        이름 뒤 공백 하나 표기(가장 약한 갈래)는 이름 칸에 놓인 줄만 대사 시작이다: 지문 여백의 '중호 앞으로 … 최형사.',
+        이어짐 칸의 '소장 어딨어?'·'경찰 조사 결과 …' 는 인물 이름으로 시작하는 지문·이어지는 말이다."""
+        if self.turn_col is None:
+            return True
+        tol = self.lay.get("tol", 0.008)
+        return self.turn_col[0] - tol <= ln.rx <= self.turn_col[1] + tol
 
     # ------------------------------------------------------------ 차례대로 요소 만들기
     def _label(self) -> list[dict]:
@@ -1060,7 +1284,7 @@ class DocParser:
                 cur["lines"].sort(key=lambda x: self.pos.get(x, 0))
                 continue
             in_dlg = cur is not None and cur["type"] == "dialogue"
-            strong_inl = bool(ex.get("inl")) and ex["inl"][2] in ("tab", "colon", "angle", "lsp", "bracket") \
+            strong_inl = bool(ex.get("inl")) and ex["inl"][2] in ("tab", "colon", "angle", "lsp", "bracket", "pname") \
                 and self._inline_ok(i)
             if in_dlg and (self.centered or self.collapsed) and cur["mode"] == "block" and i not in self.blk_ok \
                     and not ex.get("trans") and not strong_inl and self._gap_cont(cur, ln):
@@ -1173,6 +1397,8 @@ class DocParser:
         mb = _RX_BRACKET.match(f)
         if mb and (_RX_BRACKET_META.match(mb.group(1)) or self.bracket_mode):
             return False                        # '[페이지] 001', '[제목] …' 같은 대괄호 표지 줄은 잇지 않음
+        if ln.extra.get("sound_desc"):
+            return False                        # '(부인)⇥울음소리.' 소리 묘사 줄은 앞 대사에 잇지 않음(지문)
         if cur["mode"] in ("block", "dual", "flat"):
             # 이름 줄 덩어리 대사는 들여쓴 줄(flat 은 빈 줄 전까지)만 잇는다(_label 에서 처리).
             return False
@@ -1206,6 +1432,16 @@ class DocParser:
                 sc -= 2.0                       # 여러 줄에 걸친 괄호 지문
         if wrapped(prev.f, self.width) and not prev.f.startswith("("):
             sc += 2.0
+        # 대사 바로 아래(빈 줄 없이) 더 들여쓴 줄: 지문 앞에는 빈 줄을 두는 문서(tight_cont)에서는 지문 칸과 이어짐 칸이
+        # 같아도 앞 대사의 이어짐이다('장도영⇥톨게이트 영수증인데…' 아래 '조영철 잠적한 담부터 … 들락거렸어요.')
+        tight = ln.pk == prev.pk and ln.dy is not None and ln.dy < 1.3 and ln.rx > lead + self.tol2
+        if tight and self.tight_cont:
+            sc += 2.5
+        # 말 없이 괄호 지시만 있는 한 줄 차례('순임⇥(어찌할 줄 모르는 … 짓는다.)') 바로 아래 더 들여쓴 줄은 그 차례의 말.
+        # 괄호로 시작하는 줄(괄호 지문 덩어리의 첫 줄)과 씬 머리 꼴 줄은 아니다.
+        if tight and len(cur["lines"]) == 1 and cur.get("speech") and "(" in cur["speech"][0][1] \
+                and _wordless(cur["speech"][0][1]) and not f.startswith("(") and "head" not in ln.extra:
+            sc += 1.5
         nlet = T.letters(f)
         if nlet == 0:
             sc += 1.0
@@ -1226,6 +1462,12 @@ class DocParser:
             sc -= 1.5
         if prev.pk != ln.pk and not wrapped(prev.f, self.width):
             sc -= 0.5
+            # 괄호에 든 이름 차례('(쟝)⇥그래도 먹어보실 거라구요?', '(소미)⇥.... 아저씨.')의 이어지는 줄은 더 들여쓴 칸에
+            # 놓인다. 쪽이 바뀐 뒤 그 차례의 첫 줄보다 들여쓰지 않은 줄은, 이어짐 칸이 따로 있는 문서이거나 그 차례가
+            # 들여쓴 칸에 놓였으면 새 쪽 첫머리의 지문이다('순간! 케잌 위로 난데없이 꽂히는 칼날.')
+            if cur.get("sep") == "pname" and ln.rx <= lead + self.tol2 \
+                    and (self.cont_cols or lead > self.lay.get("M", 0.0) + self.tol2):
+                sc -= 1.0
         if len(cur["lines"]) >= 8:
             sc -= 0.5
         return sc > 0.5
@@ -1392,6 +1634,9 @@ class DocParser:
             if e.get("sep") == "cue":
                 core, tails = "", [spk_raw.strip()[1:-1]]
                 names = []
+            elif e.get("sep") == "pname":
+                core = self.pname_ok[lines[0]]          # 괄호에 든 이름: 그 인물의 화면 밖 목소리(아래에서 off)
+                names = [core]
             else:
                 core, tails = T.split_speaker(spk_raw)
                 names = [core]
@@ -1471,6 +1716,8 @@ class DocParser:
                 sung = True
             if T.RX_OVERLAP.search(ptxt) and len(ptxt) <= 30:
                 overlap_cue = True
+        if e.get("sep") == "pname":
+            how = how or "off"                  # 맨 앞 괄호가 (전화로)·(무전) 이면 그쪽이 먼저
         if re.search(r"[♪♬♩♫]", speech):
             sung = True
         # 병기 번역: '와. / Woah.' 또는 'Sir! …(심각한…)'
@@ -1744,6 +1991,19 @@ def compute_quality(rows: list[dict], els: list[dict], dropped: list[dict], note
     return {"lines": total, "typed_ratio": round(tr, 4), "dialogue_ratio": round(dr, 4),
             "unknown_ratio": round(ur, 4), "speakerless_dialogue": nospk, "empty_dialogue": nempty,
             "inferred_speaker": ninf, "score": round(max(0.0, min(1.0, score)), 4), "notes": notes}
+
+
+def _wordless(rest: str) -> bool:
+    """'이름⇥.......', '이름⇥(한숨)' 의 오른쪽처럼 말 없이 점·문장부호·괄호 지시뿐인가. 괄호가 '(V.O.)'·'(E)'·'(계속)' 같은
+    화자 꼬리표뿐이면(이름 줄의 꼬리표가 탭으로 떨어진 것) 아니다."""
+    pieces = T.split_parens(rest)
+    if any(k == "text" and any(c.isalnum() for c in s) for k, s in pieces):
+        return False
+    par = [s for k, s in pieces if k == "paren"]
+    if par and not any(k == "text" and s.strip() for k, s in pieces) \
+            and all(T.how_of([s]) or T.lang_of([s]) or T.is_cont_cue(s) for s in par):
+        return False
+    return True
 
 
 def _shot_slug(rest: str) -> bool:

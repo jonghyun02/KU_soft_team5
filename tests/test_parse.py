@@ -712,3 +712,558 @@ def test_quality_flags_empty_dialogue():
     # 대사가 20개 미만인 조각·짧은 문서는 비율로 판정하지 않음(한두 개로 10% 를 넘기 쉬움)
     small = {**script, "elements": els[:2] + els[-6:], "quality": {**script["quality"], "empty_dialogue": 2, "inferred_speaker": 1}}
     assert P.problems_for(small) == []
+
+
+# ---------------------------------------------------------------- 0.3.0 규칙(합성 줄, 추격자 fm55664 꼴)
+
+_PLACES = ["망원역", "은행 앞", "골목길", "초소 앞", "먹자골목", "보도방", "모텔", "마트", "지구대", "기수대", "병원", "교회"]
+_AX, _TX, _CX = 0.1667, 0.2327, 0.3          # 지문 여백, 이름 칸, 이어짐 칸
+
+
+def _chaser_rows() -> tuple[list[dict], dict[str, list[int]]]:
+    """한글 탭 대본: 지문은 여백, '이름⇥대사' 는 이름 칸, 이어지는 줄은 이어짐 칸. 줄 번호를 종류별로 함께 돌려준다."""
+    pages, at = [], {}
+    n = 0
+
+    def add(pg: list, kind: str, x: float, text: str, gap: int = 0) -> None:
+        nonlocal n
+        pg.append((x, text, gap))
+        at.setdefault(kind, []).append(n)
+        n += 1
+
+    for k, w in enumerate(_PLACES):
+        pg: list = []
+        if k % 3 == 1:
+            add(pg, "colon_head", _AX, f"{k + 1}.\t영민의 거처 : {w} / 밤", 2)
+        elif k == 8:
+            add(pg, "colon_head", _AX, f"{k + 1}.\t‘{w}을 지나는 중호’ 시퀀스 : 망원동 {w} / 밤", 2)
+        else:
+            add(pg, "head", _AX, f"{k + 1}.\t{w} / 밤", 2)
+        add(pg, "action", _AX, f"{w} 쪽으로 걸어오는 지영이 보인다. 지영과 영민이 이야기를 나눈다.", 1)
+        add(pg, "turn", _TX, f"중호\t야, {w}에 사팔팔오 너지?", 1)
+        add(pg, "dots", _TX, "영민\t.......")
+        add(pg, "paren_only", _TX, "미진\t(한숨)")
+        add(pg, "turn", _TX, f"중호\t{w}에서 뭐 하는 거야?")
+        add(pg, "pname", _TX, f"(영민)\t{w}에 차를 저렇게 대면 어떡해요?")
+        add(pg, "turn", _TX, f"대장\t{w}는 내가 책임진다.")
+        add(pg, "cont_name", _CX, f"검사 제끼고 영장도 없이 {w}까지 가는 거니까, 알겠냐?")
+        add(pg, "turn", _TX, f"검사\t{w} 영장은 안 됩니다.")
+        add(pg, "turn", _TX, f"미진\t오빠, {w}에 왔어요.")
+        add(pg, "cont_paren", _CX, "(울며)\t정말 못하겠어요... 너무 무섭고...")
+        add(pg, "action_name", _AX, f"중호 앞으로 {w} 진술서와 인주를 들이미는 최형사.", 1)
+        if k == 0:
+            add(pg, "pname_rare", _TX, "(지영)\t괜찮아요. 금방 나올 건데요, 뭐.", 1)
+        if k == 5:
+            add(pg, "numbered_talk", _AX, "9. 중호 : 야, 거기 서!", 1)      # 번호 붙은 대사 줄(씬 6 과 7 사이, 번호 9)
+        pages.append(pg)
+    return _pages(pages, pitch=0.019), at
+
+
+def test_colon_scene_headings_fill_number_gaps():
+    """쌍점이 든 번호 씬 머리('2. 영민의 거처 : 은행 앞 / 밤', 따옴표로 시작하는 '9. ‘…’ 시퀀스 : …')는 '이름 : 대사' 와
+    모양이 같아도, 받아들인 씬 머리와 같은 칸에서 빈 번호를 차례대로 메우면 씬 머리다. 번호 붙은 대사 줄은 아니다."""
+    rows, at = _chaser_rows()
+    s = P.parse_rows("fm9200001", rows)
+    assert [sc["number"] for sc in s["scenes"]] == [str(k + 1) for k in range(12)]
+    for n in at["colon_head"] + at["head"]:
+        assert el(s, n)["type"] == "scene", n
+    assert s["scenes"][1]["place"] == "영민의 거처 : 은행 앞" and s["scenes"][1]["time"] == "밤"
+    assert el(s, at["numbered_talk"][0])["type"] != "scene"
+    assert any("쌍점이 든 번호 씬 머리 5개" in x for x in s["quality"]["notes"])
+    # 씬 소속: 쌍점 씬 머리 다음 대사는 그 씬에 든다
+    sc = {x["id"]: x["number"] for x in s["scenes"]}
+    assert sc[el(s, at["colon_head"][0] + 2)["scene"]] == "2"
+    assert _covered_once(s, rows)
+
+
+def test_colon_heading_guard_keeps_numbered_dialogue():
+    """번호 붙은 대사 줄이 많은 녹취(반칙왕 fm55450: '3. 태백산: 안 가세요?')는 번호가 씬 머리 사이에 들어맞아도 씬 머리가
+    아니다(쌍점 앞이 화자로 나오는 이름이거나 뒤가 말)."""
+    body = []
+    for k in range(8):
+        body += [(0.12, f"{2 * k + 1}. 체육관 {k}호 / 낮", 2), (0.146, "태백산: 놔봐."), (0.146, "대호 : 안 아퍼."),
+                 (0.12, f"{2 * k + 2}. 태백산: 안 가세요?", 1), (0.146, "대호: 팔 꺾여서 안 아픈 사람이 어딨어?"),
+                 (0.12, f"{2 * k + 2}. 관장실 : 어서 오세요?", 1)]
+    s = P.parse_rows("fm9200002", _pages([body[i:i + 24] for i in range(0, len(body), 24)]))
+    assert len(s["scenes"]) == 8 and all(int(sc["number"]) % 2 == 1 for sc in s["scenes"])
+
+
+def test_paren_name_turns_are_offscreen_voice():
+    """'(영민)⇥차를 저렇게 대면 어떡해요?': 괄호에 든 이름 칸은 그 인물의 화면 밖 목소리(how=off, speaker_raw 는 적힌 그대로).
+    이름표에 없는 이름도 이 표기가 자리 잡은 문서에서 같은 칸에 놓이고 지문에 인물로 나오면 받는다('(지영)').
+    이어짐 칸의 '(울며)⇥…' 같은 연기 지시 줄은 화자가 아니라 앞 대사의 이어짐이다."""
+    rows, at = _chaser_rows()
+    s = P.parse_rows("fm9200001", rows)
+    for n in at["pname"]:
+        e = el(s, n)
+        assert e["type"] == "dialogue" and names(s, e) == ["영민"] and e["how"] == "off", n
+        assert e["speaker_raw"] == "(영민)" and e["lines"] == [n] and e["text"].endswith("대면 어떡해요?")
+    e = el(s, at["pname_rare"][0])
+    assert names(s, e) == ["지영"] and e["how"] == "off" and e["speaker_raw"] == "(지영)"
+    for n in at["cont_paren"]:
+        e = el(s, n)
+        assert names(s, e) == ["미진"] and e["lines"] == [n - 1, n] and "울며" in [p["text"] for p in e["paren"]]
+    assert all(p["name"] not in ("울며", "(영민)") for p in s["people"])
+    assert any("괄호에 든 이름 (이름)⇥대사 13줄" in x for x in s["quality"]["notes"])
+
+
+def test_paren_direction_lines_are_not_names():
+    """'(웃으며)⇥대사' 줄만 있는 문서: 괄호 안이 인물이 아니므로 대사 시작이 아니다."""
+    body = []
+    for k, w in enumerate(_PLACES[:8]):
+        body += [(_AX, f"{k + 1}.\t{w} / 밤", 2), (_TX, f"중호\t{w}에 있어?"), (_TX, f"(웃으며)\t{w}엔 없어요."),
+                 (_TX, f"미진\t{w}로 갈게요."), (_TX, "(당황)\t아니, 오지 마."), (_AX, f"{w}의 불이 꺼진다.", 1)]
+    s = P.parse_rows("fm9200003", _pages([body[i:i + 24] for i in range(0, len(body), 24)]))
+    assert {p["name"] for p in s["people"]} == {"중호", "미진"}
+    assert all(e["how"] == "on" for e in s["elements"] if e["type"] == "dialogue")
+
+
+def test_wordless_turns_keep_name_in_speaker_raw():
+    """말 없는 차례 '영민⇥.......', '미진⇥(한숨)': 다음 줄이 들여쓴 줄이어도 한 줄 표기 문서에서는 이름 줄이 아니다.
+    speaker_raw 는 이름만, 점은 text, 괄호는 paren 으로 가고, 다음 차례를 삼키지 않는다. 화자 이어받기도 켜지지 않는다."""
+    rows, at = _chaser_rows()
+    s = P.parse_rows("fm9200001", rows)
+    for n in at["dots"]:
+        e = el(s, n)
+        assert e["speaker_raw"] == "영민" and e["text"] == "......." and e["paren"] == [] and e["lines"] == [n], n
+        assert names(s, e) == ["영민"]
+    for n in at["paren_only"]:
+        e = el(s, n)
+        assert e["speaker_raw"] == "미진" and e["text"] == "" and e["paren"] == [{"text": "한숨", "at": 0}], n
+        assert e["lines"] == [n]
+    q = s["quality"]
+    assert q["empty_dialogue"] == 0 and q["inferred_speaker"] == 0 and q["speakerless_dialogue"] == 0
+    assert all("speaker_inferred" not in e for e in s["elements"])
+    assert any("말 없이 점·괄호만 있는 한 줄 차례 24줄" in x for x in q["notes"])
+
+
+def test_wordless_name_lines_stay_in_name_line_documents():
+    """이름 줄 문서('미주⇥(웃으며)' 아래 줄에 말)에서는 전처럼 이름 줄이다(말은 아래 줄, speaker_raw 는 줄 그대로)."""
+    pages = []
+    for k, w in enumerate(["교실", "복도", "운동장", "창고", "옥상", "매점"]):
+        pages.append([(0.143, f"{k + 1}. {w} - 낮", 2), (0.143, f"{w}에 아이들이 모여 있다.", 1),
+                      (0.47, "미주\t(웃으며)", 1), (0.28, f"니 {w}에 혼자 왔나?"),
+                      (0.47, "인호", 1), (0.28, "알았다."), (0.47, "미주", 1), (0.28, f"{w}에서 기다리께."),
+                      (0.47, "인호\t.......", 1), (0.28, "가자.")])
+    rows = _pages(pages)
+    s = P.parse_rows("fm9200004", rows)
+    e = el(s, 2)
+    assert e["speaker_raw"] == "미주 (웃으며)" and e["lines"] == [2, 3] and e["text"] == "니 교실에 혼자 왔나?"
+    assert el(s, 8)["lines"] == [8, 9] and el(s, 8)["text"] == "가자." and names(s, el(s, 8)) == ["인호"]
+
+
+def test_single_syllable_name_before_tab_is_not_letterspaced():
+    """'홍⇥이 선생님은 …'(연애의 목적 fm55036): 한 글자 이름 뒤의 탭 + '이' 로 시작하는 말을 띄운 이름 '홍 이' 로 읽지 않는다
+    (그 글자가 '홍⇥무슨 말씀…' 처럼 한 글자 이름으로 3번 이상 쓰이는 문서). 탭으로 띄운 진짜 이름 '영⇥신 (…) 대사' 는 그대로."""
+    body = []
+    for k, w in enumerate(_PLACES[:8]):
+        body += [(_AX, f"{k + 1}.\t{w} / 밤", 2), (_AX, f"{w}에서 홍이 유림을 본다. 홍이 웃는다."),
+                 (_TX, f"홍\t이 선생님은 {w}에 왜 오셨어요?"), (_TX, f"유림\t{w}가 좋아서요."), (_TX, f"홍\t이 냄새, {w} 냄새네."),
+                 (_TX, f"홍\t무슨 말씀이세요, {w}에서?")]
+    s = P.parse_rows("fm9200005", _pages([body[i:i + 24] for i in range(0, len(body), 24)]))
+    assert {p["name"] for p in s["people"]} == {"홍", "유림"}
+    assert el(s, 2)["speaker_raw"] == "홍" and el(s, 2)["text"].startswith("이 선생님은")
+    assert el(s, 4)["text"].startswith("이 냄새")
+    body = []
+    for k, w in enumerate(_PLACES[:8]):
+        body += [(_AX, f"S#\t{w} (밤)", 2), (_AX, f"{w}에 앉아 있는 영신의 모습. 문수가 영신을 본다."),
+                 (_AX, f"영\t신 (돌아다보며) {w}에 왔어?"), (_AX, f"문 수 아냐. {w}은 지금 딱 좋은데."),
+                 (_AX, f"영 신 (웃으며) {w}에서는 안 그래.")]
+    s = P.parse_rows("fm9200006", _pages([body[i:i + 25] for i in range(0, len(body), 25)]))
+    assert {p["name"] for p in s["people"]} == {"영신", "문수"}
+    assert names(s, el(s, 2)) == ["영신"] and el(s, 2)["text"].endswith("에 왔어?")
+
+
+def test_space_turn_starts_only_in_turn_column():
+    """이름 칸이 뚜렷한 문서(강한 표기 줄의 95% 이상이 한 칸)에서는 지문 여백의 '중호 앞으로 … 최형사.' 나 이어짐 칸의
+    '검사 제끼고 …' 처럼 인물 이름 + 공백으로 시작하는 줄이 대사 시작이 아니다(이름 뒤 공백 하나 표기는 이름 칸에서만)."""
+    rows, at = _chaser_rows()
+    s = P.parse_rows("fm9200001", rows)
+    for n in at["action_name"]:
+        assert el(s, n)["type"] == "action", n
+    for n in at["cont_name"]:
+        e = el(s, n)
+        assert names(s, e) == ["대장"] and e["lines"] == [n - 1, n] and "검사 제끼고" in e["text"], n
+    assert {p["name"] for p in s["people"]} == {"중호", "영민", "미진", "대장", "검사", "지영"}
+    assert person(s, next(p["id"] for p in s["people"] if p["name"] == "중호"))["count"] == 24
+    assert _covered_once(s, rows)
+
+
+# ---------------------------------------------------------------- 0.3.1 (0.3.0 규칙의 가드와 회귀, 씬 머리의 장소·시간)
+
+@pytest.mark.parametrize("rest,place,time", [
+    ("초소 앞 / 오후 / 비", "초소 앞", "오후"),                                   # 시간 뒤에 덧붙은 날씨는 버린다
+    ("망원동 골목길 : 오프닝 시퀀스 / 오후-밤 / 비-비그침", "망원동 골목길 : 오프닝 시퀀스", "오후-밤"),
+    ("영민의 거처 : 정원 / 밤 / 비", "영민의 거처 : 정원", "밤"),
+    ("시골 예식장 / 낮 / INT", "시골 예식장", "낮"),
+    ("극장 안/ 밤/ 과거", "극장 안", "밤"),
+    ("거리 / 낮 / 10년 후", "거리", "낮"),
+    ("형태사무실 / 밤~낮", "형태사무실", "밤~낮"),
+    ("도망남의 집 밖 / 짙은 새벽", "도망남의 집 밖", "짙은 새벽"),               # 꾸밈말 + 시간
+    ("부산지검 앞/이른 오후", "부산지검 앞", "이른 오후"),
+    ("도로 - 흐린 오후", "도로", "흐린 오후"),
+    ("은행 (늦은 저녁)", "은행", "늦은 저녁"),
+    ("여수댁 / 다음날 아침.", "여수댁", "다음날 아침"),                           # 시간 낱말이 이어진 것
+    ("교무실(다음날 아침)", "교무실", "다음날 아침"),
+    ("에필로그 / 아침-밤", "에필로그", "아침-밤"),
+    ("권투도장 안 - 낮 / 오후 / 저녁.", "권투도장 안", "낮 / 오후 / 저녁"),
+    ("고속도로 (밤-새벽)", "고속도로", "밤-새벽"),
+    ("INT. 배두상의 차/ 오후(밤)", "배두상의 차", "오후(밤)"),
+    ("기수대 외부 / 밤", "기수대 외부", "밤"),                                    # 장소 낱말에 붙은 내부·외부는 장소
+    ("은혜원 내부. 낮.", "은혜원 내부", "낮"),
+    ("경마장 내 / 낮", "경마장 내", "낮"),
+    ("연립주택 외부 / N", "연립주택 외부", "N"),
+    ("웨스틴 호텔 옥상 통로 - 실내/낮", "웨스틴 호텔 옥상 통로", "실내/낮"),      # 구분자로 떨어진 실내외는 전처럼 시간 쪽
+    ("공주의 방 (내부, 밤)", "공주의 방", "내부, 밤"),
+    ("진원의 방. 내부/밤", "진원의 방", "내부/밤"),
+    ("국도 실외/저녁", "국도", "실외/저녁"),
+    ("술집 / 외부 밤.", "술집", "외부 밤"),
+    ("판문점 북한 밤", "판문점 북한", "밤"),                                      # 장소 낱말은 꾸밈말이 아니다
+    ("BAR D / N", "BAR D", "N"),
+    ("미진의 집 안 / 도로 (중호의 차 안) 교차 / 밤", "미진의 집 안 / 도로 (중호의 차 안) 교차", "밤"),
+    ("집 / 밤 / 중호의 차 안에서 바라본 풍경", "집 / 밤 / 중호의 차 안에서 바라본 풍경", None),   # 뒤 조각이 길면 손대지 않는다
+    ("BEDROOM - THE NEXT MORNING", "BEDROOM", "THE NEXT MORNING"),
+    ("거실", "거실", None),
+])
+def test_split_place_time(rest, place, time):
+    assert T.split_place_time(rest) == (place, time)
+
+
+def test_scene_time_with_weather_tail_in_document():
+    """추격자(fm55664) 꼴 씬 머리 '93.⇥성미산 / 밤 / 비', '119.⇥집 밖 / 짙은 새벽', '62.⇥기수대 외부 / 밤' 의 장소·시간.
+    heading 은 적힌 그대로다."""
+    tails = ["밤 / 비", "짙은 새벽", "밤", "오후 / 비", "밤 / 비", "아침", "밤 / 비", "낮"]
+    body = []
+    for k, w in enumerate(_PLACES[:8]):
+        body += [(_AX, f"{k + 1}.\t{w}{' 외부' if k == 2 else ''} / {tails[k]}", 2), (_AX, f"{w}에 비가 내린다.", 1),
+                 (_TX, f"중호\t{w}에 있어?", 1), (_TX, f"미진\t{w}로 갈게요.")]
+    s = P.parse_rows("fm9210001", _pages([body[i:i + 16] for i in range(0, len(body), 16)], pitch=0.019))
+    assert [(sc["place"], sc["time"]) for sc in s["scenes"]] == [
+        ("망원역", "밤"), ("은행 앞", "짙은 새벽"), ("골목길 외부", "밤"), ("초소 앞", "오후"), ("먹자골목", "밤"),
+        ("보도방", "아침"), ("모텔", "밤"), ("마트", "낮")]
+    assert s["scenes"][0]["heading"] == "1. 망원역 / 밤 / 비" and s["scenes"][2]["heading"] == "3. 골목길 외부 / 밤"
+
+
+def _voice_doc(extra: list[tuple], per_scene: list[tuple] | None = None, scenes: int = 8) -> tuple[dict, list[dict], int]:
+    """이름 칸이 뚜렷한 한글 탭 대본(씬 scenes 개)에 extra 줄들을 첫 씬 끝에 더한 문서. (script, 줄, extra 첫 줄 번호).
+    본문 줄이 200개를 넘어야 한 번 나온 이름이 이름표에서 빠진다(작은 문서는 모든 이름을 이름표에 넣는다): scenes=34."""
+    pages = []
+    first = -1
+    n = 0
+    for k in range(scenes):
+        w = _PLACES[k % len(_PLACES)] + ("" if k < len(_PLACES) else f" {k // len(_PLACES) + 1}층")
+        pg = [(_AX, f"{k + 1}.\t{w} / 밤", 2), (_AX, f"{w} 쪽으로 걸어오는 영새와 채린이 보인다. 부인이 운다.", 1),
+              (_TX, f"영새\t{w}에 다 왔어.", 1), (_TX, f"채린\t{w}는 처음이에요."), (_TX, f"영새\t{w}에서 기다려."),
+              (_TX, f"채린\t{w}에서요?"), (_TX, f"영새\t그래, {w}에서."), (_TX, f"채린\t알았어요, {w}.")]
+        pg += [(x, t.replace("{w}", w), *g) for x, t, *g in (per_scene or [])]
+        if k == 0:
+            first = n + len(pg)
+            pg += list(extra)
+        n += len(pg)
+        pages.append(pg)
+    rows = _pages(pages, pitch=0.019)
+    return P.parse_rows("fm9210002", rows), rows, first
+
+
+def test_paren_name_with_voice_word_is_that_person():
+    """'(영새소리)⇥불 끕니다.', '(채린 목소리)⇥…': 괄호 안이 이름 + 소리·목소리면 그 인물의 화면 밖 목소리다(댄서의 순정
+    fm55087). 이름표에 없는 '(발자국소리)⇥…' 와 '(소리)⇥…' 는 전처럼 화자 없는 화면 밖 소리."""
+    s, rows, a = _voice_doc([(_TX, "(영새소리)\t불 끕니다.", 1), (_TX, "(채린 목소리)\t아저씨, 어디 있어요?"),
+                             (_TX, "(발자국소리)\t저벅, 저벅."), (_TX, "(소리)\t거기 누구야?")])
+    e = el(s, a)
+    assert names(s, e) == ["영새"] and e["how"] == "off" and e["speaker_raw"] == "(영새소리)" and e["text"] == "불 끕니다."
+    e = el(s, a + 1)
+    assert names(s, e) == ["채린"] and e["how"] == "off" and e["speaker_raw"] == "(채린 목소리)"
+    for n in (a + 2, a + 3):
+        e = el(s, n)
+        assert e["type"] == "dialogue" and e["speakers"] == [] and e["how"] == "off" and e["lines"] == [n], n
+    assert {p["name"] for p in s["people"]} == {"영새", "채린"}
+    assert _covered_once(s, rows)
+
+
+def test_paren_name_with_sound_description_is_action():
+    """'(부인)⇥울음소리.', '(영새)⇥개를 어르는 소리.'(곡성 fm4412879): 괄호에 든 이름 줄의 오른쪽이 소리 묘사면 그 인물의
+    말이 아니라 지문이고, 앞 대사에 이어 붙지도 않는다. '(영새)⇥그게 무슨 소리.' 는 말이다."""
+    per = [(_TX, "(영새)\t{w}에 불 꺼.", 1), (_TX, "(채린)\t{w}엔 아무도 없어요.")]
+    s, rows, a = _voice_doc([(_TX, "(채린)\t(비명을 지르며) 뭐예요!", 1), (_TX, "(채린)\t울음소리."),
+                             (_TX, "(영새)\t개를 어르는 소리.", 1), (_TX, "(영새)\t그게 무슨 소리.", 1)], per)
+    assert names(s, el(s, a)) == ["채린"] and el(s, a)["lines"] == [a]
+    assert el(s, a + 1)["type"] == "action" and el(s, a + 2)["type"] == "action"
+    e = el(s, a + 3)
+    assert e["type"] == "dialogue" and names(s, e) == ["영새"] and e["text"] == "그게 무슨 소리."
+
+
+def test_voice_marked_turns_outside_turn_column():
+    """이름 칸 밖에 놓인 '이름 + 공백' 줄이라도 이름 바로 뒤가 들리는 방식 표시면 대사 시작이다: '채린(off) 따님이 …',
+    '영새 (NAR) 항상 …', '채린 (소리)엄마!', '영새 나레이션'(다음 줄부터 말). 연기 지시 괄호 뒤가 말투일 때도
+    ('영새 (다리를 주무르며) … 하는디...'). 인물 소개('영새 (유민 갱조직의 왕) 매서운 눈동자를 …')와 이름으로 시작하는
+    지문은 지문이다. 이름표에 없는 이름의 탭 줄은 지문 칸에 놓였으면 대사가 아니지만, 꼬리표가 붙었으면 받는다."""
+    s, rows, a = _voice_doc([
+        (0.36, "채린(off) 따님이 참 예쁘네요.", 1),                                    # a
+        (_CX, "영새 (NAR) 항상 웃을 준비만 하는 놈들.. 다 너희 때문이야.", 1),          # a+1
+        (0.242, "채린 (소리)엄마!", 1),                                                # a+2
+        (0.242, "영새 (다리를 주무르며) 몸에 기온이 빠져나가불기 전에 펴야 하는디...", 1),   # a+3
+        (_AX, "영새 (유민 갱조직의 왕) 매서운 눈동자를 번뜩인다.", 1),                  # a+4
+        (_AX, "채린 앞으로 진술서와 인주를 들이미는 형사.", 1),                         # a+5
+        (_AX, "아나운서(V.O)\t표절 논란으로 물의를 빚었던 작가가 어제 새벽 체포됐습니다.", 1),   # a+6
+        (_AX, "서부역 급식소\t실외 아침 풍경이 펼쳐진다.", 1),                          # a+7
+        (0.19, "영새 나레이션", 1), (_CX, "난 채린이랑 같이 있어야 됩니다."),            # a+8, a+9
+    ], scenes=34)
+    assert names(s, el(s, a)) == ["채린"] and el(s, a)["how"] == "off"
+    assert names(s, el(s, a + 1)) == ["영새"] and el(s, a + 1)["how"] == "narration"
+    assert names(s, el(s, a + 2)) == ["채린"] and el(s, a + 2)["text"] == "엄마!"
+    e = el(s, a + 3)
+    assert names(s, e) == ["영새"] and e["text"].endswith("하는디...") and e["speaker_raw"] == "영새 (다리를 주무르며)"
+    assert el(s, a + 4)["type"] == "action" and el(s, a + 5)["type"] == "action"
+    e = el(s, a + 6)
+    assert e["type"] == "dialogue" and e["speaker_raw"] == "아나운서(V.O)" and e["text"].startswith("표절 논란")
+    assert el(s, a + 7)["type"] == "action"
+    e = el(s, a + 8)                                # 꼬리표 낱말은 0.2.5 때처럼 text 앞에 남는다('나레이션 난 …')
+    assert names(s, e) == ["영새"] and e["lines"] == [a + 8, a + 9] and e["text"].endswith("같이 있어야 됩니다.")
+    assert {p["name"] for p in s["people"]} == {"영새", "채린", "아나운서"}
+    assert _covered_once(s, rows)
+
+
+_NX, _BX = 0.1429, 0.2774                       # 이름 칸(= 지문 여백 없음), 지문·이어짐이 함께 놓이는 칸
+
+
+def _same_col_rows(tight_action: bool) -> tuple[list[dict], dict[str, list[int]]]:
+    """지문과 이어지는 말이 같은 칸에 놓이는 한글 탭 대본(야수 fm55120 꼴). 지문 앞에는 빈 줄을 둔다(tight_action 이면
+    대사 바로 아래 붙여 쓴 지문도 섞는다)."""
+    pages, at = [], {}
+    n = 0
+
+    def add(pg: list, kind: str, x: float, text: str, gap: int = 0) -> None:
+        nonlocal n
+        pg.append((x, text, gap))
+        at.setdefault(kind, []).append(n)
+        n += 1
+
+    for k, w in enumerate(_PLACES):
+        pg: list = []
+        add(pg, "head", _NX, f"{k + 1}. {w} / 밤", 2)
+        add(pg, "action", _BX, f"그때, {w} 앞에 차가 멈춘다. 오진우가 서류를 넘긴다.", 1)
+        add(pg, "turn", _NX, f"장도영\t{w} 영수증인데... 거기 날짜 보이죠?", 1)
+        add(pg, "cont_name", _BX, "조영철 잠적한 담부터 정확히 사흘에 한번씩 들락거렸어요.")
+        add(pg, "turn", _NX, f"오진우\t{w}에서 무슨 일이 있었던 거야.")
+        add(pg, "cont", _BX, "이 안에서 대체 무슨 짓을 한 거냐고!")
+        add(pg, "turn", _NX, f"조영철\t{w}는 모릅니다.")
+        add(pg, "turn", _NX, "장도영\t그래서?")
+        add(pg, "action", _BX, "장도영이 고개를 들어 창밖을 본다.", 0 if tight_action else 1)
+        add(pg, "turn", _NX, f"조영철\t{w} 얘긴 그만하시죠.", 1)
+        add(pg, "action", _BX, "조영철이 자리에서 일어난다.", 1)
+        pages.append(pg)
+    return _pages(pages, pitch=0.019), at
+
+
+def test_tight_lines_below_dialogue_continue_it_when_action_follows_blank_line():
+    """지문과 이어지는 말이 같은 칸에 놓이는 문서: 지문 앞에 늘 빈 줄을 두면, 대사 바로 아래 붙여 쓴 들여쓴 줄은 앞 대사의
+    이어짐이다. 인물 이름으로 시작해도('조영철 잠적한 담부터 … 들락거렸어요.') 새 차례도 지문도 아니다. 빈 줄 뒤의 줄은
+    지문으로 남는다. 대사 바로 아래 붙여 쓴 지문이 섞인 문서에서는 이 규칙을 켜지 않는다."""
+    rows, at = _same_col_rows(tight_action=False)
+    s = P.parse_rows("fm9210003", rows)
+    for n in at["cont_name"]:
+        e = el(s, n)
+        assert e["type"] == "dialogue" and names(s, e) == ["장도영"] and e["lines"] == [n - 1, n], n
+        assert e["text"].endswith("들락거렸어요.")
+    for n in at["cont"]:
+        e = el(s, n)
+        assert names(s, e) == ["오진우"] and e["lines"] == [n - 1, n], n
+    for n in at["action"]:
+        assert el(s, n)["type"] == "action", n
+    assert {p["name"] for p in s["people"]} == {"장도영", "오진우", "조영철"}
+    assert any(x.startswith("대사 이어짐: 지문 앞에 빈 줄을 두는 문서") for x in s["quality"]["notes"])
+    assert _covered_once(s, rows)
+    rows, at = _same_col_rows(tight_action=True)
+    s = P.parse_rows("fm9210004", rows)
+    assert not any(x.startswith("대사 이어짐") for x in s["quality"]["notes"])
+    assert all(el(s, n)["type"] == "action" for n in at["cont_name"])
+    assert all(el(s, n)["type"] == "action" for n in at["action"])
+
+
+@pytest.mark.parametrize("action_col_known", [True, False])
+def test_speech_below_wordless_paren_turn_belongs_to_it(action_col_known):
+    """'순임⇥(어찌할 줄 모르는 막막한 표정을 짓는다.)' 처럼 말 없이 괄호 지시만 있는 한 줄 차례 바로 아래 붙여 쓴 들여쓴
+    줄은 그 차례의 말이다(박하사탕 fm54127, 잠복근무 fm55051). 괄호로 시작하는 줄(괄호 지문 덩어리, 텔 미 썸딩 fm54281)은
+    잇지 않는다. 지문 칸을 아는 문서(씬 머리 다음 줄로 정함)와 모르는 문서 둘 다에서 본다."""
+    lead = "그때, " if action_col_known else ""          # '그때,' 로 시작해야 씬 머리 다음 줄이 지문 칸 증거가 된다
+    body = []
+    for k, w in enumerate(_PLACES[:8]):
+        body += [(_NX, f"{k + 1}. {w} / 밤", 2), (_BX, f"{lead}{w} 앞에 순임이 서 있다.", 1),
+                 (_BX, f"순임의 어깨 위로 {w}의 눈이 내려앉는다."), (_BX, f"멀리서 {w}행 기차 소리가 들린다."),
+                 (_NX, f"영호\t{w}엔 왜 왔어요?", 1), (_NX, f"순임\t{w}가 보고 싶어서요."), (_NX, f"영호\t{w}는 이제 없어요."),
+                 (_NX, "순임\t(어찌할 줄 모르는 막막한 표정을 짓는다.)"),
+                 (_BX, f"그래도…… 어떻게 안될까요? 잠깐만이라도…… {w}까지 오느라고"), (_BX, "얼마나 고생했다고요."),
+                 (_NX, "영호\t(고개를 젓는다.)"), (_BX, f"(순임의 손목을 느닷없이 {w} 밖으로 확 밀치는 M."),
+                 (_BX, f"뒤로 휘청 밀려나는 순임, {w} 바닥에 주저앉는다.)")]
+    rows = _pages([body[i:i + 26] for i in range(0, len(body), 26)], pitch=0.019)
+    dp = P.DocParser("fm9210005", rows)
+    s = dp.parse()
+    assert (dp.act_x is not None) == action_col_known and not dp.cont_cols and not dp.tight_cont
+    for k in range(8):
+        e = el(s, 13 * k + 7)
+        assert names(s, e) == ["순임"] and e["lines"] == [13 * k + 7, 13 * k + 8, 13 * k + 9], k
+        assert e["text"].startswith("그래도……") and e["text"].endswith("고생했다고요.")
+        assert e["paren"][0]["text"].startswith("어찌할 줄 모르는")
+        e = el(s, 13 * k + 10)
+        assert names(s, e) == ["영호"] and e["lines"] == [13 * k + 10] and e["text"] == "", k
+        assert el(s, 13 * k + 11)["type"] == "action" and el(s, 13 * k + 12)["type"] == "action"
+    assert _covered_once(s, rows)
+
+
+def test_action_at_page_top_does_not_continue_paren_name_turn():
+    """괄호에 든 이름 차례('(쟝)⇥그래도 먹어보실 거라구요?', 앤티크 fm5691751·아저씨 fm765450)가 쪽 끝에 놓이고 다음 쪽이
+    지문으로 시작하면, 그 지문은 이어지는 말이 아니다. 같은 쪽에서 이어짐 칸에 놓인 줄은 그대로 이어진다."""
+    pages = []
+    for k, w in enumerate(_PLACES[:10]):
+        pg = [(_AX, f"{w} 유리창에 금이 간다. 쟝이 웃는다.", 0 if k else 2)] if k else []
+        pg += [(_AX, f"{k + 1}.\t{w} / 밤", 2), (_AX, f"{w}에 케잌이 든 접시가 놓여 있다. 쟝이 태식을 본다.", 1),
+               (_TX, f"태식\t{w}에 누구 있어?", 1), (_TX, f"쟝\t{w}엔 아무도 없어요."), (_TX, f"태식\t{w}에서 기다려."),
+               (_TX, f"(쟝)\t{w}에 온 걸 환영합니다."), (_CX, "(웃으며) 천천히 둘러보세요."),
+               (_TX, f"(쟝)\t그래도 {w} 케잌을 먹어보실 거라구요? 후후.", 1)]
+        pages.append(pg)
+    pages.append([(_AX, "순간! 케잌 위로 난데없이 꽂히는 칼날. 비명 소리가 엉킨다.")])
+    rows = _pages(pages, pitch=0.019)
+    s = P.parse_rows("fm9210006", rows)
+    tops = [r["n"] for r in rows if r["n"] and rows[r["n"] - 1]["page"] != r["page"]]       # 쪽마다 첫 줄
+    assert len(tops) == 10
+    for n in tops:
+        assert el(s, n)["type"] == "action", n
+        e = el(s, n - 1)
+        assert names(s, e) == ["쟝"] and e["how"] == "off" and e["lines"] == [n - 1], n
+    cont = [r["n"] for r in rows if r["text"].startswith("(웃으며)")]
+    assert all(el(s, n)["lines"] == [n - 1, n] and names(s, el(s, n)) == ["쟝"] for n in cont)
+    assert _covered_once(s, rows)
+
+
+def _numbered_doc(heads: list[tuple[float, str]], extra: dict[int, list[tuple]] | None = None) -> tuple[dict, list[dict]]:
+    """번호 씬 머리 heads(x, 글)마다 지문 한 줄과 대사 넷이 따르는 한글 탭 대본. extra[k] 는 k 번째 씬 끝에 더하는 줄."""
+    pages = []
+    for k, (x, h) in enumerate(heads):
+        w = _PLACES[k % len(_PLACES)]
+        pg = [(x, h, 2), (_AX, f"그때, {w} 쪽으로 걸어오는 지영이 보인다.", 1), (_TX, f"중호\t야, {w}에 사팔팔오 너지?", 1),
+              (_TX, f"영민\t{w}는 처음인데요."), (_TX, f"중호\t{w}에서 뭐 하는 거야?"), (_TX, f"영민\t{w} 구경요.")]
+        pg += list((extra or {}).get(k, []))
+        pages.append(pg)
+    rows = _pages(pages, pitch=0.019)
+    return P.parse_rows("fm9210007", rows), rows
+
+
+def test_colon_heading_needs_order_column_and_series():
+    """쌍점이 든 번호 줄을 씬 머리로 받는 조건: 번호가 앞뒤 씬 머리 사이를 차례대로 메울 것(앞 번호보다 1~3 큼), 받아들인
+    씬 머리와 같은 칸일 것, 그 문서에 번호 씬 머리가 5개 이상일 것. 쌍점 없이 따옴표로 시작하는 번호 줄은 시간 꼬리가
+    있어야 한다."""
+    plain = [(_AX, f"{k + 1}.\t{w} / 밤") for k, w in enumerate(_PLACES)]
+
+    def numbers(s: dict) -> list[str]:
+        return [sc["number"] for sc in s["scenes"]]
+
+    # 기준: 빈 번호 3 을 같은 칸의 쌍점 줄이 메운다
+    heads = plain[:2] + [(_AX, "3.\t영민의 거처 : 창고 / 밤")] + plain[3:]
+    s, rows = _numbered_doc(heads)
+    assert numbers(s) == [str(k + 1) for k in range(12)] and s["scenes"][2]["place"] == "영민의 거처 : 창고"
+    # 번호가 차례에 맞지 않는다(씬 6 과 7 사이의 40)
+    s, rows = _numbered_doc(plain, {5: [(_AX, "40.\t영민의 거처 : 뒤편 / 밤", 2), (_AX, "그때, 문이 열린다.", 1)]})
+    assert numbers(s) == [str(k + 1) for k in range(12)]
+    assert el(s, next(r["n"] for r in rows if r["text"].startswith("40.")))["type"] != "scene"
+    # 다른 칸에 놓였다(씬 머리 칸에서 0.03 들여쓴 '3. …')
+    heads = plain[:2] + [(_AX + 0.03, "3.\t영민의 거처 : 창고 / 밤")] + plain[3:]
+    s, rows = _numbered_doc(heads)
+    assert numbers(s) == [str(k + 1) for k in range(12) if k != 2]
+    # 번호 씬 머리가 4개뿐인 문서
+    heads = plain[:4] + [(_AX, "5.\t영민의 거처 : 창고 / 밤")]
+    s, rows = _numbered_doc(heads)
+    assert numbers(s) == ["1", "2", "3", "4"]
+    # 따옴표로 시작하는 번호 줄: 시간 꼬리가 없으면 씬 머리가 아니다
+    heads = plain[:2] + [(_AX, "3.\t‘젓가락 행진곡’으로 넘어간다")] + plain[3:]
+    s, rows = _numbered_doc(heads)
+    assert numbers(s) == [str(k + 1) for k in range(12) if k != 2]
+    heads = plain[:2] + [(_AX, "3.\t‘영민의 집’과 ‘지구대’ 교차 / 낮")] + plain[3:]
+    s, rows = _numbered_doc(heads)
+    assert numbers(s) == [str(k + 1) for k in range(12)] and s["scenes"][2]["time"] == "낮"
+
+
+def test_shot_size_with_dots_is_not_dialogue():
+    """'영희 B.S', '병권 C.U.' 처럼 점을 찍은 촬영 크기 표기도 대사가 아니라 화면 설명이다(인터뷰 fm54519)."""
+    for t in ("B.S", "C.U.", "b.s , 돌아보는 영희", "E.C.U", "M.L.S."):
+        assert P._RX_SHOT.match(t), t
+    for t in ("B.S.A 총을 든다.", "C.U.T 하고 외친다", "Ms. Smith is waiting for you."):
+        assert not P._RX_SHOT.match(t), t
+    s, rows, a = _voice_doc([(_TX, "채린 B.S", 1), (_AX, "그때, 문이 열린다.", 1), (_TX, "영새 C.U.", 1),
+                             (_AX, "그때, 불이 꺼진다.", 1)], scenes=34)
+    assert el(s, a)["type"] == "action" and el(s, a + 2)["type"] == "action"
+    assert {p["name"] for p in s["people"]} == {"영새", "채린"}
+
+
+def test_paren_words_at_name_column_need_evidence():
+    """괄호 이름 표기가 자리 잡은 문서(8줄 이상)의 이름 칸에 놓인 '(사이)⇥…', '(행인)⇥…': 이름표에 없고 다른 곳에서 화자로
+    나오지도 지문에 인물로 나오지도 않는 낱말은 인물로 받지 않는다. 지문에 인물로 나오는 '(지영)' 은 받는다."""
+    rows, at = _chaser_rows()
+    base = len(rows)
+    more = _pages([[(_AX, "13.\t교회 뒤 / 밤", 2), (_AX, "교회 뒤로 사람들이 지나간다.", 1), (_TX, "중호\t거기 누구야?", 1),
+                    (_TX, "(사이)\t아무도 없나...", 1), (_TX, "(행인)\t저요? 지나가는 길인데요.", 1),
+                    (_TX, "(지영)\t여기예요, 여기.", 1)]], pitch=0.019)
+    for r in more:
+        r["n"] += base
+        r["page"] += rows[-1]["page"]
+    rows = rows + more
+    s = P.parse_rows("fm9200001", rows)
+    assert {p["name"] for p in s["people"]} == {"중호", "영민", "미진", "대장", "검사", "지영"}
+    assert el(s, base + 3)["type"] != "dialogue" or names(s, el(s, base + 3)) == ["중호"]       # 인물 '사이' 는 없다
+    assert names(s, el(s, base + 5)) == ["지영"] and el(s, base + 5)["how"] == "off"
+    assert _covered_once(s, rows)
+
+
+def test_no_turn_column_when_strong_turns_are_spread():
+    """이름 칸은 강한 표기 줄의 95% 이상이 한 칸에 놓일 때만 정한다. 열에 하나가 다른 칸에 놓인 문서에서는 이름 칸으로
+    거르지 않으므로, 이름 + 공백으로 시작하는 줄을 전처럼(0.2.5) 읽는다."""
+    def doc(spread: bool) -> tuple[P.DocParser, list[dict], list[int]]:
+        pages, marks = [], []
+        n = 0
+        for k, w in enumerate(_PLACES):
+            pg = [(_AX, f"{k + 1}.\t{w} / 밤", 2), (_AX, f"그때, {w} 쪽으로 걸어오는 지영이 보인다.", 1)]
+            for j in range(5):
+                x = 0.36 if spread and j == 4 and k % 2 == 0 else _TX        # 60줄 중 6줄(10%)이 다른 칸
+                pg.append((x, f"{'중호' if j % 2 == 0 else '영민'}\t{w}에서 {j}번 문제는 어떻게 됐어?", 1 if j == 0 else 0))
+            marks.append(n + len(pg))
+            pg.append((_AX, f"중호 앞으로 {w} 진술서와 인주를 들이미는 최형사.", 1))
+            n += len(pg)
+            pages.append(pg)
+        rows = _pages(pages, pitch=0.019)
+        dp = P.DocParser("fm9210008", rows)
+        dp.script = dp.parse()
+        return dp, rows, marks
+
+    dp, rows, marks = doc(spread=False)
+    assert dp.turn_col is not None and all(el(dp.script, n)["type"] == "action" for n in marks)
+    dp, rows, marks = doc(spread=True)
+    assert dp.turn_col is None
+    assert all(el(dp.script, n)["type"] == "dialogue" and names(dp.script, el(dp.script, n)) == ["중호"] for n in marks)
+
+
+@pytest.mark.parametrize("name_lines,one_line", [(5, True), (7, False)])
+def test_wordless_turns_follow_the_dominant_notation(name_lines, one_line):
+    """말 없는 차례 '영민⇥.......' 를 한 줄 대사로 둘지 이름 줄로 볼지는 그 문서의 표기 비율로 정한다: 같은 줄에 말이 있는
+    한 줄 표기가 이름 줄의 4배 이상(20줄 이상)이면 한 줄 대사, 아니면 전처럼 이름 줄(말은 아래 줄)."""
+    pages, dots = [], []
+    n = 0
+    for k, w in enumerate(_PLACES[:8]):
+        pg = [(_AX, f"{k + 1}.\t{w} / 밤", 2), (_AX, f"그때, {w} 쪽으로 걸어오는 지영이 보인다.", 1),
+              (_TX, f"중호\t야, {w}에 사팔팔오 너지?", 1), (_TX, f"미진\t{w}는 처음인데요."), (_TX, f"중호\t{w}에서 뭐 하는 거야?")]
+        dots.append(n + len(pg))
+        pg += [(_TX, "영민\t.......", 1), (_CX, f"{w} 구경하러 왔는데요.")]
+        if k < name_lines:
+            pg += [(_TX, "지영", 1), (_CX, f"{w}에 아무도 없어요.")]
+        n += len(pg)
+        pages.append(pg)
+    rows = _pages(pages, pitch=0.019)
+    dp = P.DocParser("fm9210009", rows)
+    s = dp.parse()
+    assert any("말 없이 점·괄호만 있는 한 줄 차례" in x for x in s["quality"]["notes"]) == one_line
+    for d in dots:
+        e = el(s, d)
+        if one_line:
+            assert e["speaker_raw"] == "영민" and e["text"].startswith(".......")
+        else:
+            assert e["speaker_raw"] == "영민 ......." and e["lines"] == [d, d + 1] and e["text"].endswith("구경하러 왔는데요.")
+        assert names(s, e) == ["영민"]

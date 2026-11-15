@@ -265,9 +265,49 @@ def _strip_tail_num(rest: str) -> tuple[str, str | None]:
 
 
 _RX_EN_TIME_WORD = re.compile(r"\b" + EN_TIME + r"\b")
+# 시간 단위 = 시간 낱말 하나, 또는 꾸밈말 하나 + 시간 낱말('짙은 새벽', '이른 오후', '깊은 밤')
+_KO_TIME_UNIT = r"(?:[가-힣]{1,3}[은른운린한]\s+)?" + KO_TIME
+# 빗금 사이 조각이 시간뿐인가: '밤', '오후-밤', '밤 ~새벽', '짙은 새벽', '다음날 아침'
+_RX_KO_TIME_SEG = re.compile(r"^" + _KO_TIME_UNIT + r"(?:(?:\s*[-–~,]\s*|\s+)" + _KO_TIME_UNIT + r")*$")
+# 글 끝에 놓인 시간 낱말 하나(그 앞은 글 머리·공백·구분자)
+_RX_KO_TIME_END = re.compile(r"(?:^|(?<=[\s/\-–—~,.(\[]))(?P<u>" + KO_TIME + r")$")
+# 글 끝에 놓인 꾸밈말 하나. 그 앞이 구분자일 때만('학교 앞 / 짙은'). 장소 낱말에 공백으로 이어진 '북한 밤' 의 '북한' 은 아니다
+_RX_KO_TIME_MOD = re.compile(r"(?<=[/\-–—,(\[])\s*(?P<u>[가-힣]{1,3}[은른운린한])$")
+# 시간 앞에 붙여 적은 내부·외부('기수대 외부 / 밤'). 실내·실외 는 여기 넣지 않는다(칸을 나눠 적는 표지: '국도 실외/저녁')
+_RX_IE_PLACE = re.compile(r"(?:내부|외부|내|외)\s*[.,/]?\s*")
+_TIME_JOIN = "-–—~,/("
+_PLACE_SEPS = "-–—/,.(["
+
+
+def _time_start(s: str, ts: int) -> int:
+    """s[ts:] 가 씬 머리 끝의 시간일 때, 바로 앞에 이어 적힌 시간 낱말과 꾸밈말까지 시간으로 넓힌 시작 위치.
+    '여수댁 / 다음날 아침' -> '다음날 아침', '권투도장 안 - 낮 / 오후 / 저녁' -> '낮 / 오후 / 저녁', '에필로그 / 아침-밤' ->
+    '아침-밤', '차/ 오후(밤)' -> '오후(밤)', '집 밖 / 짙은 새벽' -> '짙은 새벽'. 장소가 남지 않게 되면 넓히지 않는다."""
+    while True:
+        head = s[:ts].rstrip()
+        joined = head[-1:] in _TIME_JOIN and bool(head)
+        h2 = head[:-1].rstrip() if joined else head
+        m = _RX_KO_TIME_END.search(h2)
+        u = m.group("u") if m else ""
+        if m and m.start("u") > 0 and not (len(u) == 1 and u.isascii()):       # 'BAR D / N' 의 'D' 는 장소
+            ts = m.start("u")
+            continue
+        if not joined:
+            m = _RX_KO_TIME_MOD.search(head)
+            if m and m.start("u") > 0:
+                ts = m.start("u")
+        return ts
 
 
 def split_place_time(rest: str) -> tuple[str | None, str | None]:
+    """씬 머리에서 번호를 뗀 글 -> (장소, 시간). 시간은 글 끝의 시간 표현이다(적힌 글 그대로).
+
+    한국어 씬 머리의 규칙:
+      - 시간 낱말이 여럿 이어지면 통째로 시간('여수댁 / 다음날 아침', '에필로그 / 아침-밤', '집 밖 / 짙은 새벽').
+      - 시간 뒤에 빗금으로 덧붙은 짧은 조각(날씨, 실내외, 회상 표지)은 장소도 시간도 아니다. heading 에만 남는다
+        ('초소 앞 / 오후 / 비', '시골 예식장 / 낮 / INT', '극장 안/ 밤/ 과거', '… / 오후-밤 / 비-비그침').
+      - 시간 앞의 실내·실외·내부·외부는 구분자로 떨어져 있으면 시간 쪽('- 실내/낮', '(내부, 밤)': 말뭉치의 오랜 관례),
+        장소 낱말에 공백으로만 이어진 내부·외부·내·외 는 장소 쪽이다('기수대 외부 / 밤' -> '기수대 외부', '밤')."""
     s = rest.strip().strip("<>[]").strip()
     s = re.sub(r"\s+\d{1,4}[A-Z]?\s*$", "", s)
     # 'BEDROOM - THE NEXT MORNING', '거리 / 늦은 오후': 마지막 구분자 뒤 덩어리에 시간 낱말이 있으면 통째로 시간
@@ -279,8 +319,32 @@ def split_place_time(rest: str) -> tuple[str | None, str | None]:
     m = RX_TIME_TAIL.search(s)
     time = None
     if m and m.start() > 0:
-        time = m.group("t").strip(" .")
-        s = s[: m.start()]
+        t0, te = m.start("t"), m.end("t")
+        mi = _RX_IE_PLACE.match(s, t0)
+        if mi and mi.end() < te and s[t0 - 1].isspace() and s[:t0].rstrip()[-1:] not in _PLACE_SEPS:
+            ts = mi.end()                               # '기수대 외부 / 밤': 내부·외부가 장소 낱말에 붙어 있다
+        else:
+            ts = _time_start(s, t0)
+        time = s[ts:te]
+        if time.count("(") > time.count(")") and s[te:te + 1] == ")":
+            time += ")"
+        time = time.strip(" .")
+        s = s[: m.start()] if ts == t0 else s[:ts].rstrip(" .-–—/,:([~")
+    elif "/" in s:
+        # 글 끝이 시간이 아니다: 빗금으로 나눈 조각 가운데 시간뿐인 조각(들)이 시간이고 그 뒤의 짧은 조각은 버린다
+        cuts = [x.start() for x in re.finditer("/", s)]
+        bounds = list(zip([0] + [c + 1 for c in cuts], cuts + [len(s)]))
+        segs = [s[a:b].strip() for a, b in bounds]
+        for k in range(1, len(segs)):
+            if not _RX_KO_TIME_SEG.match(segs[k]):
+                continue
+            last = k
+            while last + 1 < len(segs) and _RX_KO_TIME_SEG.match(segs[last + 1]):
+                last += 1
+            if all(0 < len(x) <= 10 and not re.search(r"[.?!:]", x) for x in segs[last + 1:]):
+                time = s[bounds[k][0]:bounds[last][1]].strip()
+                s = s[: cuts[k - 1]]
+            break
     place = RX_INTEXT_WORD.sub("", s).strip(" .-–—/,:")
     return (place or None), (time or None)
 
