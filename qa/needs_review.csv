@@ -39,6 +39,36 @@ item,fm55664,local_0270,I0750,asr_low_conf,0.172,added 줄 conf 0.172 < 0.2,film
 item,fm55664,local_0270,I1507,asr_low_conf,0.199,added 줄 conf 0.199 < 0.2,films/local_0270/work/align.json
 item,fm55664,local_0270,I0069,asr_low_conf,0.093,changed 줄 conf 0.093 < 0.2,films/local_0270/work/align.json
 item,fm55664,local_0270,I0854,asr_low_conf,0.135,changed 줄 conf 0.135 < 0.2,films/local_0270/work/align.json
+item,fm847721,local_0556,I1636,asr_low_conf,0.002,added 줄 conf 0.002 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1313,asr_low_conf,0.014,added 줄 conf 0.014 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1041,asr_low_conf,0.021,added 줄 conf 0.021 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0725,asr_low_conf,0.032,added 줄 conf 0.032 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1752,asr_low_conf,0.038,added 줄 conf 0.038 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0279,asr_low_conf,0.043,added 줄 conf 0.043 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0316,asr_low_conf,0.045,added 줄 conf 0.045 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0011,asr_low_conf,0.046,added 줄 conf 0.046 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0230,asr_low_conf,0.074,added 줄 conf 0.074 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1689,asr_low_conf,0.075,added 줄 conf 0.075 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1452,asr_low_conf,0.079,added 줄 conf 0.079 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1165,asr_low_conf,0.082,added 줄 conf 0.082 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0109,asr_low_conf,0.112,added 줄 conf 0.112 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1056,asr_low_conf,0.114,added 줄 conf 0.114 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0461,asr_low_conf,0.117,added 줄 conf 0.117 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1008,asr_low_conf,0.118,added 줄 conf 0.118 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1473,asr_low_conf,0.119,added 줄 conf 0.119 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0132,asr_low_conf,0.124,added 줄 conf 0.124 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1578,asr_low_conf,0.141,added 줄 conf 0.141 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1316,asr_low_conf,0.145,added 줄 conf 0.145 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1463,asr_low_conf,0.146,added 줄 conf 0.146 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1031,asr_low_conf,0.161,added 줄 conf 0.161 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0681,asr_low_conf,0.162,added 줄 conf 0.162 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1932,asr_low_conf,0.163,added 줄 conf 0.163 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1867,asr_low_conf,0.182,added 줄 conf 0.182 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1794,asr_low_conf,0.188,added 줄 conf 0.188 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0227,asr_low_conf,0.19,added 줄 conf 0.190 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1712,asr_low_conf,0.193,added 줄 conf 0.193 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I1412,asr_low_conf,0.138,changed 줄 conf 0.138 < 0.2,films/local_0556/work/align.json
+item,fm847721,local_0556,I0817,asr_low_conf,0.179,changed 줄 conf 0.179 < 0.2,films/local_0556/work/align.json
 doc,fm54163,local_0010,,other,0.985,"한컴 PDF 가 원본 글 일부를 잃었을 수 있음(대체 경로 글의 글자 중 1.5% 없음), 레이아웃 때문에 PDF 를 씀",filmmakers_scripts/한국영화 시나리오/다찌마와 리 시나리오 입니다 [54163].doc
 doc,fm55169,local_0179,,other,0.842,"한컴 PDF 가 글 일부를 잃음(원본 글자 중 15.8% 없음), 대체 경로 글을 씀(레이아웃 없음, fallback_hwp5_bodytext)",filmmakers_scripts/한국영화 시나리오/사랑을 놓치다 [55169].hwp
 doc,fm55634,local_0264,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_hwp5_bodytext): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/한국영화 시나리오/만남의 광장 시나리오입니다 [55634].hwp
@@ -48,3 +78,4 @@ doc,fm56350_1,local_0430,,other,0.5,"한컴 변환 실패, 대체 경로 글만 
 doc,fm56365,local_0434,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_hwp5_bodytext): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/외국영화 시나리오/매그놀리아 Magnolia [56365].hwp
 doc,fm56725,local_0502,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_antiword): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/외국영화 시나리오/Spider Man (스파이더맨) [56725].doc
 doc,fm56878,local_0533,,other,,manifest 에는 받은 첨부인데 디스크에 없음: MovieSmiCh.exe,
+film,fm847721,local_0556,,other,0.032,"받아쓰기: 말 구간 2652초 가운데 낱말 없이 1초 넘게 빈 자리 56곳 85.9초, 낱말이 하나도 안 나온 묶음 1개",films/local_0556/work/asr.json
