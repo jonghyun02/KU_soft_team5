@@ -4,4 +4,5 @@
 *.jsonl text eol=lf
 *.md text eol=lf
 *.csv text eol=lf
+*.cmd text eol=crlf
 *.zip binary
