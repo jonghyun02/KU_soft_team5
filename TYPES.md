@@ -1,6 +1,6 @@
 # 원본 파일 유형 분류 (코드가 나누는 기준과 결과)
 
-만든 시각: 2026-11-13 11:11 · 생성기 `tools/make_types.py`(모든 숫자는 디스크 결과물에서 다시 셈) · 문서별 표는 `types.csv`
+만든 시각: 2026-11-15 20:19 · 생성기 `tools/make_types.py`(모든 숫자는 디스크 결과물에서 다시 셈) · 문서별 표는 `types.csv`
 
 규칙 파서 판 기준(`--rules`): LLM 판으로 바뀐 문서도 보관된 규칙 판(cache/parse_rules)으로 센다.
 
@@ -66,6 +66,8 @@
 - 변환 방법(파일 기준, cache/convert_log.jsonl): doc fallback_antiword 4, doc hancom 52, docx hancom 2, hwp3 fallback_hwp3_text 1, hwp3 hancom 140, hwp5 fallback_hwp5_bodytext 3, hwp5 hancom 277, rtf hancom 2
 - OCR 사유(문서 기준): 스캔 PDF 72, 원본 PDF 글자층이 깨짐 5, 한컴 변환 PDF 글자층이 깨짐 2, 글자층을 읽을 수 없는 PDF 1
 - 두 쪽 펼침(한 장에 대본 두 쪽을 나란히 인쇄) 문서 31개: 가운데 빈 띠에서 왼쪽·오른쪽 쪽으로 나눈다(`lines._gutter`, OCR 은 `ocr.split_two_up`). 경로별 hancom_pdf 30, ocr 1
+- 공백 복원(`types.csv` 의 `spacing`, lines.jsonl 머리 행 `made.spacing`): 한컴 PDF 글자층에 띄어쓰기·이름 뒤 탭이 빠진 파일(공백 손실 0.15 초과)은 줄 글의 공백·탭을 원본 문서 글에 맞춘다(`lines.restore_spacing`). `source` 10문서 (fm54367 0.240, fm54441 0.519, fm54519 0.227, fm55036 0.396, fm55099 0.401, fm55455 0.350, fm55655 0.405, fm55664 0.309, fm55844 0.379, fm416766 0.369), `skipped`(원본 글을 못 읽어 견주지 못함) 2문서 (fm55630, fm56026). 경로별 hancom_pdf 10
+- 줄을 만든 lines 판(머리 행 `made.version`, 공백 손실은 0.4.0 부터 잰다): 0.4.1 684
 
 ## 4. 내용 종류·언어·판본
 
@@ -84,12 +86,12 @@
 
 | 값 | 표기 | 모양 | 보기(지어낸 글) | 문서 | 한국영화 | 외국영화 | 표기 비율 중앙값 | 확인 필요 문서 | 파서 분기 |
 |---|---|---|---|---|---|---|---|---|---|
-| `own_line` | 이름 줄 | 이름만 한 줄에 적고 대사는 다음 줄부터 | `철수` 다음 줄 `어디 가?` | 371 | 107 | 264 | 0.99 | 20 | DocParser._vocab (block_mode·flat_mode), _collapsed_cues |
-| `tab` | 이름⇥대사 | 이름과 대사 사이가 탭(칸 띄움) | `철수⇥어디 가?` | 185 | 179 | 6 | 0.96 | 8 | DocParser._inline_split_raw (tab) |
-| `colon` | 이름 : 대사 | 이름 뒤 쌍점(쌍반점·빗금도 같은 표기로 봄) | `철수 : 어디 가?`, `철수/ 어디 가?` | 87 | 73 | 14 | 0.95 | 8 | DocParser._inline_split_raw (colon) |
-| `space1` | 이름 대사 | 이름 뒤 공백 하나뿐 | `철수 어디 가?` | 26 | 25 | 1 | 0.92 | 5 | DocParser._vocab (space_vocab: 줄 첫 낱말 빈도) |
+| `own_line` | 이름 줄 | 이름만 한 줄에 적고 대사는 다음 줄부터 | `철수` 다음 줄 `어디 가?` | 371 | 107 | 264 | 0.99 | 10 | DocParser._vocab (block_mode·flat_mode), _collapsed_cues |
+| `tab` | 이름⇥대사 | 이름과 대사 사이가 탭(칸 띄움) | `철수⇥어디 가?` | 185 | 179 | 6 | 0.98 | 6 | DocParser._inline_split_raw (tab) |
+| `colon` | 이름 : 대사 | 이름 뒤 쌍점(쌍반점·빗금도 같은 표기로 봄) | `철수 : 어디 가?`, `철수/ 어디 가?` | 87 | 73 | 14 | 0.96 | 2 | DocParser._inline_split_raw (colon) |
+| `space1` | 이름 대사 | 이름 뒤 공백 하나뿐 | `철수 어디 가?` | 26 | 25 | 1 | 0.92 | 1 | DocParser._vocab (space_vocab: 줄 첫 낱말 빈도) |
 | `space2` | 이름  대사 | 이름 뒤 공백 둘 이상 | `철수   어디 가?` | 5 | 4 | 1 | 0.92 | 0 | DocParser._inline_split_raw (space2) |
-| `quote` | 이름"대사" | 이름 뒤(공백 없이 또는 하나 두고) 따옴표 | `철수"어디 가?"` | 3 | 2 | 1 | 0.83 | 1 | DocParser._inline_split_raw (quote) |
+| `quote` | 이름"대사" | 이름 뒤(공백 없이 또는 하나 두고) 따옴표 | `철수"어디 가?"` | 3 | 2 | 1 | 0.83 | 0 | DocParser._inline_split_raw (quote) |
 | `bracket` | [이름] 대사 | 이름을 대괄호로 쌈 | `[철수] 어디 가?` | 2 | 2 | 0 | 0.99 | 0 | DocParser._bracketed |
 | `angle` | <이름> 대사 | 이름을 꺾쇠로 쌈(대사가 다음 줄에 와도) | `<철수> 어디 가?` | 1 | 1 | 0 | 1.00 | 0 | DocParser._inline_split_raw (angle) |
 | `none` | 대사 없음 | 이름이 적힌 대사가 5개 미만(시놉시스, 자막 받아쓰기 등) |  | 4 | 1 | 3 | - | 4 |  |
@@ -106,7 +108,7 @@
 |---|---|---|---|---|---|
 | `flat_names` | 들여쓰기 없는 이름 줄(빈 줄 뒤 이름, 빈 줄 앞까지 대사) | 27 | 14 | 13 | DocParser._vocab flat_mode |
 | `space1_vocab` | 이름 뒤 공백 하나: 줄 첫 낱말 빈도로 이름을 찾음 | 34 | 23 | 11 | DocParser._vocab space_vocab |
-| `letterspaced_names` | 글자 사이를 띄운 이름 | 42 | 42 | 0 | DocParser._letterspaced |
+| `letterspaced_names` | 글자 사이를 띄운 이름 | 41 | 41 | 0 | DocParser._letterspaced |
 | `collapsed_cues` | 대사가 지문 여백에 놓인 대문자 이름 줄(영어 대본) | 6 | 0 | 6 | DocParser._collapsed_cues |
 | `bullet_names` | 글머리표가 붙은 이름 | 3 | 3 | 0 | DocParser._candidates |
 | `bracket_names` | 대괄호 이름 | 2 | 2 | 0 | DocParser._bracketed |
@@ -116,12 +118,16 @@
 | `scene_indented_series` | 들여쓰거나 가운데 놓인 번호 씬 머리 | 7 | 7 | 0 | DocParser._accept_headings |
 | `scene_upper_slug` | INT./EXT.·번호 없이 대문자 짧은 줄이 씬 머리 | 5 | 0 | 5 | DocParser._accept_headings |
 | `scene_restart` | 씬 번호가 1로 다시 시작(앞 번호는 인물표·설정) | 8 | 7 | 1 | DocParser._accept_headings |
-| `front_dialogue` | 첫 씬 머리 앞에 대사가 있음 | 65 | 35 | 30 | DocParser._front_end |
-| `front_none` | 앞머리 없이 첫 줄부터 본문 | 22 | 8 | 14 | DocParser._front_end |
-| `speaker_inherit` | 이름 줄 없이 이어진 대사는 앞 화자를 이어받음(speaker_inferred) | 114 | 48 | 66 | DocParser._build |
+| `front_dialogue` | 첫 씬 머리 앞에 대사가 있음 | 66 | 36 | 30 | DocParser._front_end |
+| `front_none` | 앞머리 없이 첫 줄부터 본문 | 21 | 7 | 14 | DocParser._front_end |
+| `speaker_inherit` | 이름 줄 없이 이어진 대사는 앞 화자를 이어받음(speaker_inferred) | 104 | 38 | 66 | DocParser._build |
 | `vo_resolved` | (V.O.) 를 화면 밖 소리와 내레이션으로 가름 | 249 | 52 | 197 | DocParser._resolve_vo |
 | `n_ambiguous` | (N) 을 밤과 내레이션으로 가름 | 31 | 30 | 1 | DocParser._dialogue_fields |
 | `subtitle_file` | 자막 파일 꼴(시각 줄·자막 번호를 뺌) | 1 | 0 | 1 | DocParser.parse |
+| `scene_colon_heads` | 쌍점이 든 번호 씬 머리(`12. 장소 : 설명 / 밤`)를 받아들인 씬 머리와 같은 칸에서 빈 번호를 차례대로 메울 때 받음 | 8 | 8 | 0 | DocParser._colon_heads |
+| `paren_names` | 괄호에 든 이름 `(이름)⇥대사`: 이름표에 있는 인물의 화면 밖 목소리(off) | 20 | 20 | 0 | DocParser._paren_names |
+| `wordless_turns` | 말 없이 점·괄호만 있는 한 줄 차례(`이름⇥.......`)를 이름 줄이 아닌 한 줄 대사로 봄 | 55 | 54 | 1 | DocParser._vocab, _wordless |
+| `tight_cont` | 지문 앞에 늘 빈 줄을 두는 문서: 대사 바로 아래 붙여 쓴 들여쓴 줄은 앞 대사의 이어짐 | 46 | 44 | 2 | DocParser._cont (tight_cont) |
 
 ### 5.3 씬 머리
 
@@ -129,28 +135,28 @@
 
 ### 5.4 유형별 확인 필요(qa/needs_review.csv)
 
-| 대표 표기 | 문서 | `extract_broken` | `other` | `parse_low_dialogue` | `speaker_missing` |
-|---|---|---|---|---|---|
-| `own_line` | 371 | 1 | 5 | 10 | 4 |
-| `tab` | 185 | 1 | 2 | 6 | 1 |
-| `colon` | 87 | 0 | 2 | 2 | 4 |
-| `space1` | 26 | 0 | 0 | 2 | 3 |
-| `space2` | 5 | 0 | 0 | 0 | 0 |
-| `quote` | 3 | 0 | 0 | 1 | 0 |
-| `bracket` | 2 | 0 | 0 | 0 | 0 |
-| `angle` | 1 | 0 | 0 | 0 | 0 |
-| `none` | 4 | 0 | 0 | 4 | 0 |
+| 대표 표기 | 문서 | `asr_low_conf` | `extract_broken` | `other` | `parse_low_dialogue` | `speaker_missing` |
+|---|---|---|---|---|---|---|
+| `own_line` | 371 | 0 | 1 | 5 | 1 | 3 |
+| `tab` | 185 | 1 | 1 | 2 | 1 | 1 |
+| `colon` | 87 | 0 | 0 | 2 | 0 | 0 |
+| `space1` | 26 | 0 | 0 | 0 | 1 | 0 |
+| `space2` | 5 | 0 | 0 | 0 | 0 | 0 |
+| `quote` | 3 | 0 | 0 | 0 | 0 | 0 |
+| `bracket` | 2 | 0 | 0 | 0 | 0 | 0 |
+| `angle` | 1 | 0 | 0 | 0 | 0 | 0 |
+| `none` | 4 | 0 | 0 | 0 | 4 | 0 |
 
-| 글자 경로 | 문서 | `extract_broken` | `other` | `parse_low_dialogue` | `speaker_missing` |
-|---|---|---|---|---|---|
-| `hancom_pdf` | 471 | 0 | 2 | 17 | 8 |
-| `pdf_textlayer` | 105 | 0 | 0 | 0 | 0 |
-| `ocr` | 80 | 1 | 0 | 5 | 4 |
-| `plain_text` | 19 | 0 | 0 | 2 | 0 |
-| `fallback_text` | 8 | 1 | 7 | 1 | 0 |
-| `xls_table` | 1 | 0 | 0 | 0 | 0 |
+| 글자 경로 | 문서 | `asr_low_conf` | `extract_broken` | `other` | `parse_low_dialogue` | `speaker_missing` |
+|---|---|---|---|---|---|---|
+| `hancom_pdf` | 471 | 1 | 0 | 2 | 5 | 4 |
+| `pdf_textlayer` | 105 | 0 | 0 | 0 | 0 | 0 |
+| `ocr` | 80 | 0 | 1 | 0 | 1 | 0 |
+| `plain_text` | 19 | 0 | 0 | 0 | 1 | 0 |
+| `fallback_text` | 8 | 0 | 1 | 7 | 0 | 0 |
+| `xls_table` | 1 | 0 | 0 | 0 | 0 | 0 |
 
-- 유형을 센 판(`parser`): sink-parse 684. docs/ 에서 지금 LLM 판인 문서 2개는 보관된 규칙 판으로 셌다
+- 유형을 센 판(`parser`): sink-parse 684. docs/ 에서 지금 LLM 판인 문서 29개는 보관된 규칙 판으로 셌다
 
 ## 6. types.csv 칸
 
@@ -180,3 +186,4 @@
 | `parser_branches` | 파서가 켠 특수 분기(5.2절, 세로선으로 이음) |
 | `score` | 유형을 센 판의 품질 점수(quality.score) |
 | `needs_review` | 확인 필요 문제(qa/needs_review.csv 그대로, 세로선으로 이음) |
+| `spacing` | 공백 복원(3절): `source` 한컴 PDF 줄의 공백·탭을 원본 문서 글로 맞춤, `skipped` 원본 글을 읽지 못해 공백 손실을 견주지 못함, 빈 값은 기록 없음(견줬고 문턱 아래, 한컴 PDF 경로가 아님, 또는 공백 손실을 재기 전의 lines 판) |

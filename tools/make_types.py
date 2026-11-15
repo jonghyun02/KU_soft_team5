@@ -1,12 +1,15 @@
 """TYPES.md 와 types.csv 생성: 코드가 원본 파일을 어떤 유형으로 나누는지(기준·값·문서 수)와 문서별 유형 표.
 
-사용: .venv/Scripts/python -I tools/make_types.py [--rules]
-  --rules  LLM 판으로 바뀐 문서도 보관된 규칙 판(cache/parse_rules)으로 센다(규칙 파서만의 결과를 볼 때).
+사용: .venv/Scripts/python -I tools/make_types.py [--rules] [--out-dir DIR]
+  --rules        LLM 판으로 바뀐 문서도 보관된 규칙 판(cache/parse_rules)으로 센다(규칙 파서만의 결과를 볼 때).
+  --out-dir DIR  TYPES.md 와 types.csv 를 DIR 에 쓴다(기본 저장소 맨 위).
 숫자는 모두 지금 디스크의 결과물에서 다시 센다(손으로 쓴 숫자 없음):
-catalog.csv, cache/convert_log.jsonl, cache/ocr, docs/*/lines.jsonl, docs/*/script.json, qa/needs_review.csv.
+catalog.csv, cache/convert_log.jsonl, cache/ocr, docs/*/lines.jsonl(머리 행의 made.spacing 포함), docs/*/script.json,
+qa/needs_review.csv.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
@@ -203,12 +206,25 @@ BRANCHES = [
     ("vo_resolved", r"^\(V\.O\.\)", "(V.O.) 를 화면 밖 소리와 내레이션으로 가름", "DocParser._resolve_vo"),
     ("n_ambiguous", r"^\(N\)", "(N) 을 밤과 내레이션으로 가름", "DocParser._dialogue_fields"),
     ("subtitle_file", r"^자막 파일 꼴", "자막 파일 꼴(시각 줄·자막 번호를 뺌)", "DocParser.parse"),
+    # parse 0.3.x 에서 더한 분기
+    ("scene_colon_heads", r"^씬 머리: 쌍점이 든 번호 씬 머리",
+     "쌍점이 든 번호 씬 머리(`12. 장소 : 설명 / 밤`)를 받아들인 씬 머리와 같은 칸에서 빈 번호를 차례대로 메울 때 받음",
+     "DocParser._colon_heads"),
+    ("paren_names", r"^대사 표기: 괄호에 든 이름", "괄호에 든 이름 `(이름)⇥대사`: 이름표에 있는 인물의 화면 밖 목소리(off)",
+     "DocParser._paren_names"),
+    ("wordless_turns", r"^대사 표기: 말 없이 점·괄호만 있는 한 줄 차례",
+     "말 없이 점·괄호만 있는 한 줄 차례(`이름⇥.......`)를 이름 줄이 아닌 한 줄 대사로 봄", "DocParser._vocab, _wordless"),
+    ("tight_cont", r"^대사 이어짐: 지문 앞에 빈 줄을 두는 문서",
+     "지문 앞에 늘 빈 줄을 두는 문서: 대사 바로 아래 붙여 쓴 들여쓴 줄은 앞 대사의 이어짐", "DocParser._cont (tight_cont)"),
 ]
 _BRANCH_RE = [(k, re.compile(p)) for k, p, _, _ in BRANCHES]
+PARSE_03_BRANCHES = ("scene_colon_heads", "paren_names", "wordless_turns", "tight_cont")   # parse 0.3.x 의 새 꼬리표
 
 CSV_FIELDS = ["doc_id", "category", "title", "real_format", "files", "route", "convert_method", "ocr_why", "two_up",
               "script_lang", "is_translation", "version_label", "content", "is_primary", "parser", "lines", "scenes",
-              "dialogues", "dialogue_form", "form_share", "name_deco", "parser_branches", "score", "needs_review"]
+              "dialogues", "dialogue_form", "form_share", "name_deco", "parser_branches", "score", "needs_review",
+              "spacing"]           # 새 칸은 끝에만 더한다(앞 칸의 차례·뜻은 그대로)
+SPACING_KO = {"source": "한컴 PDF 줄의 공백·탭을 원본 문서 글로 맞춤", "skipped": "원본 글을 읽지 못해 공백 손실을 견주지 못함"}
 
 
 def read_lines_stat(doc_id: str) -> tuple[dict[int, Counter], dict[int, int], int]:
@@ -231,6 +247,28 @@ def read_lines_stat(doc_id: str) -> tuple[dict[int, Counter], dict[int, int], in
                 maxpage[k] = max(maxpage[k], x["page"])
             n += 1
     return src, maxpage, n
+
+
+def lines_head(doc_id: str) -> dict:
+    """lines.jsonl 머리 행(첫 줄). 없거나 머리 행이 아니면 빈 dict."""
+    p = paths.DOCS / doc_id / "lines.jsonl"
+    if not p.exists():
+        return {}
+    with open(p, encoding="utf-8") as f:
+        first = f.readline()
+    try:
+        head = json.loads(first) if first.strip() else {}
+    except ValueError:
+        return {}
+    return head if isinstance(head, dict) and "schema" in head else {}
+
+
+def spacing_of(head: dict) -> str:
+    """머리 행 made.spacing -> 공백 복원 값: source(원본 글로 맞춤), skipped(견주지 못함), 파일마다 다르면 + 로 이음.
+    기록이 없으면 빈 값(견줬고 문턱 아래, 한컴 PDF 경로가 아님, 또는 공백 손실을 재기 전의 lines 판)."""
+    recs = ((head.get("made") or {}).get("spacing") or []) if isinstance(head.get("made"), dict) else []
+    vals = ["source" if r.get("from") == "source" else "skipped" for r in recs if isinstance(r, dict)]
+    return "+".join(dict.fromkeys(vals))
 
 
 def pdf_pages(pdf: Path) -> int | None:
@@ -316,6 +354,9 @@ def doc_types(r: dict, log: dict, review: dict[str, list[str]], rules_only: bool
 
     note = r.get("note") or ""
     content = "|".join(x for x in note.split(";") if x.startswith(("content:", "tv_")))
+    head = lines_head(doc_id)
+    made = head.get("made") if isinstance(head.get("made"), dict) else {}
+    loss = [rec.get("loss") for rec in made.get("spacing") or [] if isinstance(rec, dict) and rec.get("from") == "source"]
     return {
         "doc_id": doc_id, "category": r["category"], "title": r.get("title_norm") or r.get("title_raw") or "",
         "real_format": r["real_format"], "files": len(r["files_list"]),
@@ -325,7 +366,10 @@ def doc_types(r: dict, log: dict, review: dict[str, list[str]], rules_only: bool
         "content": content, "is_primary": r["is_primary"], "parser": parser, "lines": n_lines, "scenes": scenes,
         "dialogues": n_dlg, "dialogue_form": form, "form_share": share, "name_deco": deco,
         "parser_branches": "|".join(branches), "score": score, "needs_review": "|".join(review.get(doc_id, [])),
+        "spacing": spacing_of(head),
         "_llm_now": llm_now,        # docs 의 script.json 이 지금 LLM 판인지(types.csv 에는 쓰지 않음)
+        "_lines_version": str(made.get("version") or ""),     # lines.jsonl 을 만든 lines 판(types.csv 에는 쓰지 않음)
+        "_spacing_loss": loss,      # 공백 복원한 파일의 공백 손실(types.csv 에는 쓰지 않음)
     }
 
 
@@ -340,8 +384,13 @@ def counts(c: Counter) -> str:
     return ", ".join(f"{k} {v}" for k, v in c.most_common()) or "-"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser(description="TYPES.md 와 types.csv 생성")
+    ap.add_argument("--rules", action="store_true", help="LLM 판 문서도 보관된 규칙 판으로 센다")
+    ap.add_argument("--out-dir", default=None, help="TYPES.md 와 types.csv 를 쓸 폴더(기본 저장소 맨 위)")
+    a = ap.parse_args(argv)
+    out_dir = Path(a.out_dir) if a.out_dir else ROOT
     rows = catalog.load()
     docs = [r for r in rows if r["status"] != "excluded"]
     excl = [r for r in rows if r["status"] == "excluded"]
@@ -357,7 +406,7 @@ def main() -> int:
                 if x["doc_id"] and x["problem"] not in review[x["doc_id"]]:
                     review[x["doc_id"]].append(x["problem"])
 
-    rules_only = "--rules" in sys.argv[1:]
+    rules_only = a.rules
     T = [doc_types(r, log, review, rules_only) for r in docs]
     cat_of = {r["doc_id"]: r["category"] for r in docs}
 
@@ -458,6 +507,18 @@ def main() -> int:
     two = [t for t in T if t["two_up"] == "true"]
     w(f"- 두 쪽 펼침(한 장에 대본 두 쪽을 나란히 인쇄) 문서 {len(two)}개: 가운데 빈 띠에서 왼쪽·오른쪽 쪽으로 나눈다"
       f"(`lines._gutter`, OCR 은 `ocr.split_two_up`). 경로별 " + counts(Counter(t["route"] for t in two)))
+    resp = [t for t in T if "source" in t["spacing"].split("+")]
+    skip = [t for t in T if "skipped" in t["spacing"].split("+")]
+    w(f"- 공백 복원(`types.csv` 의 `spacing`, lines.jsonl 머리 행 `made.spacing`): 한컴 PDF 글자층에 띄어쓰기·이름 뒤 탭이 "
+      f"빠진 파일(공백 손실 0.15 초과)은 줄 글의 공백·탭을 원본 문서 글에 맞춘다(`lines.restore_spacing`). "
+      f"`source` {len(resp)}문서"
+      + (" (" + ", ".join(f"{t['doc_id']} {'/'.join(f'{x:.3f}' for x in t['_spacing_loss'] if x is not None)}"
+                          for t in resp) + ")" if resp else "")
+      + f", `skipped`(원본 글을 못 읽어 견주지 못함) {len(skip)}문서"
+      + (" (" + ", ".join(t["doc_id"] for t in skip) + ")" if skip else "")
+      + ". 경로별 " + counts(Counter(t["route"] for t in resp)))
+    w("- 줄을 만든 lines 판(머리 행 `made.version`, 공백 손실은 0.4.0 부터 잰다): "
+      + counts(Counter(t["_lines_version"] or "-" for t in T)))
     w("")
 
     # ---------- 4
@@ -563,6 +624,8 @@ def main() -> int:
         "dialogue_form": "대표 대사 표기(5.1절)", "form_share": "이름 적힌 대사 중 대표 표기의 비율", "name_deco": "이름 꾸밈(letterspaced, bullet)",
         "parser_branches": "파서가 켠 특수 분기(5.2절, 세로선으로 이음)", "score": "유형을 센 판의 품질 점수(quality.score)",
         "needs_review": "확인 필요 문제(qa/needs_review.csv 그대로, 세로선으로 이음)",
+        "spacing": "공백 복원(3절): " + ", ".join(f"`{k}` {v}" for k, v in SPACING_KO.items())
+                   + ", 빈 값은 기록 없음(견줬고 문턱 아래, 한컴 PDF 경로가 아님, 또는 공백 손실을 재기 전의 lines 판)",
     }
     L.extend(table(["칸", "뜻"], [[f"`{c}`", col_ko[c]] for c in CSV_FIELDS]))
 
@@ -571,8 +634,8 @@ def main() -> int:
     cw.writeheader()
     for t in T:
         cw.writerow({k: util.nfc(str(t[k])) for k in CSV_FIELDS})
-    util.write_text(ROOT / "types.csv", buf.getvalue(), encoding="utf-8-sig")
-    util.write_text(ROOT / "TYPES.md", "\n".join(L) + "\n")
+    util.write_text(out_dir / "types.csv", buf.getvalue(), encoding="utf-8-sig")
+    util.write_text(out_dir / "TYPES.md", "\n".join(L) + "\n")
     print("\n".join(L))
     return 0
 

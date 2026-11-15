@@ -11,6 +11,34 @@ doc,fm56910,local_0538,,parse_low_dialogue,0.0,대사 줄 비율이 낮음: dial
 doc,fm55536,local_0244,,speaker_missing,0.7509,"[LLM 판] 앞 대사에서 이어받은 추정 화자 143/574 > 10%(speaker_inferred, 틀릴 수 있음)",docs/fm55536/script.json
 doc,fm55773,local_0285,,speaker_missing,0.8171,"[LLM 판] 앞 대사에서 이어받은 추정 화자 141/771 > 10%(speaker_inferred, 틀릴 수 있음)",docs/fm55773/script.json
 doc,fm56190,local_0384,,speaker_missing,0.8277,"[LLM 판] 앞 대사에서 이어받은 추정 화자 127/737 > 10%(speaker_inferred, 틀릴 수 있음)",docs/fm56190/script.json
+doc,fm56307,local_0417,,speaker_missing,0.8841,"앞 대사에서 이어받은 추정 화자 103/889 > 10%(speaker_inferred, 틀릴 수 있음)",docs/fm56307/script.json
+item,fm55664,local_0270,I1523,asr_low_conf,0.014,added 줄 conf 0.014 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1030,asr_low_conf,0.017,added 줄 conf 0.017 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0766,asr_low_conf,0.044,added 줄 conf 0.044 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1498,asr_low_conf,0.045,added 줄 conf 0.045 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1909,asr_low_conf,0.049,added 줄 conf 0.049 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1808,asr_low_conf,0.06,added 줄 conf 0.060 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1806,asr_low_conf,0.07,added 줄 conf 0.070 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0721,asr_low_conf,0.072,added 줄 conf 0.072 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1807,asr_low_conf,0.079,added 줄 conf 0.079 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1060,asr_low_conf,0.085,added 줄 conf 0.085 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1819,asr_low_conf,0.086,added 줄 conf 0.086 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0077,asr_low_conf,0.09,added 줄 conf 0.090 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0161,asr_low_conf,0.093,added 줄 conf 0.093 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1266,asr_low_conf,0.093,added 줄 conf 0.093 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1070,asr_low_conf,0.097,added 줄 conf 0.097 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0423,asr_low_conf,0.1,added 줄 conf 0.100 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1946,asr_low_conf,0.108,added 줄 conf 0.108 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1078,asr_low_conf,0.11,added 줄 conf 0.110 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0785,asr_low_conf,0.114,added 줄 conf 0.114 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0380,asr_low_conf,0.123,added 줄 conf 0.123 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0686,asr_low_conf,0.149,added 줄 conf 0.149 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0399,asr_low_conf,0.155,added 줄 conf 0.155 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1804,asr_low_conf,0.166,added 줄 conf 0.166 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0750,asr_low_conf,0.172,added 줄 conf 0.172 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I1507,asr_low_conf,0.199,added 줄 conf 0.199 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0069,asr_low_conf,0.093,changed 줄 conf 0.093 < 0.2,films/local_0270/work/align.json
+item,fm55664,local_0270,I0854,asr_low_conf,0.135,changed 줄 conf 0.135 < 0.2,films/local_0270/work/align.json
 doc,fm54163,local_0010,,other,0.985,"한컴 PDF 가 원본 글 일부를 잃었을 수 있음(대체 경로 글의 글자 중 1.5% 없음), 레이아웃 때문에 PDF 를 씀",filmmakers_scripts/한국영화 시나리오/다찌마와 리 시나리오 입니다 [54163].doc
 doc,fm55169,local_0179,,other,0.842,"한컴 PDF 가 글 일부를 잃음(원본 글자 중 15.8% 없음), 대체 경로 글을 씀(레이아웃 없음, fallback_hwp5_bodytext)",filmmakers_scripts/한국영화 시나리오/사랑을 놓치다 [55169].hwp
 doc,fm55634,local_0264,,other,0.5,"한컴 변환 실패, 대체 경로 글만 있음(레이아웃 없음, fallback_hwp5_bodytext): hancom_empty_pdf:pages=1,chars=0",filmmakers_scripts/한국영화 시나리오/만남의 광장 시나리오입니다 [55634].hwp

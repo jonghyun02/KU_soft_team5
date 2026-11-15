@@ -1,4 +1,5 @@
-"""tools/make_types.py 의 대사 표기 재기(dialogue_form)와 특수 분기 읽기."""
+"""tools/make_types.py 의 대사 표기 재기(dialogue_form), 특수 분기 읽기, 공백 복원 칸(spacing)."""
+import json
 import sys
 from pathlib import Path
 
@@ -59,6 +60,12 @@ def test_branch_patterns_match_parser_notes():
         "scene_restart": "씬 번호가 784번 줄에서 1로 다시 시작: 앞 번호 159개는 앞머리(인물표·설정)로 봄",
         "vo_resolved": "(V.O.): 같은 씬에 그 인물의 다른 대사가 있으면 off(8), 없으면 narration(18)",
         "subtitle_file": "자막 파일 꼴(SRT·WebVTT): 화살표 시각 줄과 자막 번호 1592줄을 dropped(timecode·subtitle_cue)",
+        # parse 0.3.x 의 새 꼬리표(추격자 fm55664 등 다시 만든 문서의 notes 꼴)
+        "scene_colon_heads": "씬 머리: 쌍점이 든 번호 씬 머리 53개를 받음(받아들인 씬 머리와 같은 칸, 빈 번호를 차례대로 메움)",
+        "wordless_turns": "대사 표기: 말 없이 점·괄호만 있는 한 줄 차례 56줄은 이름 줄이 아니라 한 줄 대사",
+        "paren_names": "대사 표기: 괄호에 든 이름 (이름)⇥대사 24줄(그 인물의 화면 밖 목소리, off; 이름표에 없는 이름 3줄 포함)",
+        "tight_cont": "대사 이어짐: 지문 앞에 빈 줄을 두는 문서(대사 다음 지문 120줄 중 붙여 쓴 것 3줄): "
+                      "대사 바로 아래 붙여 쓴 들여쓴 줄은 앞 대사의 이어짐",
     }
     rx = dict(M._BRANCH_RE)
     for key, note in notes.items():
@@ -67,3 +74,72 @@ def test_branch_patterns_match_parser_notes():
         assert others == [], (key, others)
     plain = "대사 표기: 이름⇥대사 394, 이름 : 대사 3; 지문 여백 x=0.205, 단계 [(0.205, 637)]"
     assert [k for k, r in M._BRANCH_RE if r.search(plain)] == []
+
+
+def test_new_branch_notes_are_the_ones_the_parser_writes():
+    """parse 0.3.x 꼬리표는 sinkprep/parse.py 가 quality.notes 에 적는 글 머리와 글자까지 같다(파서 글이 바뀌면 여기서 걸린다)."""
+    src = (Path(__file__).resolve().parent.parent / "sinkprep" / "parse.py").read_text(encoding="utf-8")
+    pats = {k: p for k, p, _, _ in M.BRANCHES}
+    assert set(M.PARSE_03_BRANCHES) <= set(pats)
+    for k in M.PARSE_03_BRANCHES:
+        lit = pats[k].lstrip("^")
+        assert lit == M.re.escape(lit).replace("\\", "") and lit in src, k
+
+
+# ------------------------------------------------------------------ 공백 복원(lines made.spacing)
+def _row(doc_id="fm1"):
+    return {"doc_id": doc_id, "category": "ko_film", "title_norm": "시험", "real_format": "hwp5", "files_list": [],
+            "file_formats_list": [], "script_lang": "ko", "is_translation": "false", "version_label": "unknown",
+            "is_primary": "true", "note": ""}
+
+
+def _put_doc(docs: Path, doc_id: str, spacing=None, notes=None, version="0.4.1"):
+    made = {"stage": "lines", "version": version, "sinkprep": "0"}
+    if spacing is not None:
+        made["spacing"] = spacing
+    d = docs / doc_id
+    d.mkdir(parents=True)
+    head = {"schema": "sink.lines/1", "doc_id": doc_id, "files": [], "made": made}
+    (d / "lines.jsonl").write_text(json.dumps(head, ensure_ascii=False) + "\n"
+                                   + json.dumps({"n": 1, "text": "가", "src": "hwp", "file": 0}) + "\n", encoding="utf-8")
+    if notes is not None:
+        s = {"schema": "sink.script/1", "doc_id": doc_id, "parser": {"name": "sink-parse", "version": "0.3.1"},
+             "scenes": [], "elements": [], "quality": {"score": 1.0, "notes": notes}}
+        (d / "script.json").write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+
+
+def test_spacing_column_reads_lines_head(tmp_path, monkeypatch):
+    monkeypatch.setattr(M.paths, "DOCS", tmp_path)
+    src = {"file": 0, "from": "source", "loss": 0.3089, "matched": 0.98, "lines": 980, "spaces": 3700, "tabs": 260,
+           "removed": 1, "lowered": 26}
+    _put_doc(tmp_path, "fm1", [src])
+    _put_doc(tmp_path, "fm2", [{"file": 0, "from": None, "skipped": "source_missing"}])
+    _put_doc(tmp_path, "fm3")                                         # 기록 없음: 견줬고 문턱 아래
+    _put_doc(tmp_path, "fm4", [src, {"file": 1, "from": None, "skipped": "few_bounds:12"}])
+    _put_doc(tmp_path, "fm5", version="0.3.0")                        # 공백 손실을 재기 전 판
+    got = {d: M.doc_types(_row(d), {}, {}) for d in ("fm1", "fm2", "fm3", "fm4", "fm5", "fm9")}
+    assert {d: t["spacing"] for d, t in got.items()} == {"fm1": "source", "fm2": "skipped", "fm3": "", "fm4": "source+skipped",
+                                                         "fm5": "", "fm9": ""}
+    assert got["fm1"]["_spacing_loss"] == [0.3089] and got["fm2"]["_spacing_loss"] == []
+    assert got["fm5"]["_lines_version"] == "0.3.0" and got["fm9"]["_lines_version"] == ""
+    assert M.lines_head("fm9") == {}
+
+
+def test_types_csv_keeps_old_columns_and_adds_spacing_last():
+    old = ["doc_id", "category", "title", "real_format", "files", "route", "convert_method", "ocr_why", "two_up",
+           "script_lang", "is_translation", "version_label", "content", "is_primary", "parser", "lines", "scenes",
+           "dialogues", "dialogue_form", "form_share", "name_deco", "parser_branches", "score", "needs_review"]
+    assert M.CSV_FIELDS[:len(old)] == old and M.CSV_FIELDS[len(old):] == ["spacing"]
+
+
+def test_new_parser_branches_land_in_the_row(tmp_path, monkeypatch):
+    monkeypatch.setattr(M.paths, "DOCS", tmp_path)
+    notes = ["씬 머리: 쌍점이 든 번호 씬 머리 53개를 받음(받아들인 씬 머리와 같은 칸, 빈 번호를 차례대로 메움)",
+             "대사 표기: 말 없이 점·괄호만 있는 한 줄 차례 56줄은 이름 줄이 아니라 한 줄 대사",
+             "대사 표기: 괄호에 든 이름 (이름)⇥대사 24줄(그 인물의 화면 밖 목소리, off)",
+             "대사 표기: 이름⇥대사 1007, 이름 따옴표 대사 4; 지문 여백 x=0.1667, 단계 [(0.167, 1500)]"]
+    _put_doc(tmp_path, "fm1", notes=notes)
+    _put_doc(tmp_path, "fm2", notes=["대사 이어짐: 지문 앞에 빈 줄을 두는 문서(대사 다음 지문 120줄 중 붙여 쓴 것 3줄): "
+                                     "대사 바로 아래 붙여 쓴 들여쓴 줄은 앞 대사의 이어짐"])
+    assert M.doc_types(_row("fm1"), {}, {})["parser_branches"] == "scene_colon_heads|paren_names|wordless_turns"
+    assert M.doc_types(_row("fm2"), {}, {})["parser_branches"] == "tight_cont"
