@@ -199,7 +199,9 @@ def cross_pass_overlaps(ops: list[dict], index: dict[str, list[dict]],
 
 def double_claims(ops: list[dict], index: dict[str, list[dict]], tol: float = SAME_SOUND_S) -> list[str]:
     """한 번 난 소리를 두 줄이 가졌거나 가졌을 수 있는 곳의 설명 목록: ``shared_words`` (같은 pass 의 같은 낱말, 확실함)
-    뒤에 ``cross_pass_overlaps`` (다른 pass 의 줄끼리 tol 초 넘게 겹침, 의심)를 잇는다. 대사 글은 넣지 않는다."""
+    뒤에 ``cross_pass_overlaps`` (다른 pass 의 줄끼리 tol 초 넘게 겹침, 의심)를 잇는다. 대사 글은 넣지 않는다.
+    운영 차례는 두 함수를 따로 부른다(align 과 validate 의 C2 가 shared_words, final 이 cross_pass_overlaps). 이것은 둘을 한 번에
+    보는 조사·시험용이다."""
     return shared_words(ops) + [f"{a} 와 {b} 의 시간 구간이 {sec:.3f}초 겹침(서로 다른 pass: 같은 소리가 두 줄에 들어갔을 수 있음)"
                                 for a, b, sec in cross_pass_overlaps(ops, index, tol)]
 

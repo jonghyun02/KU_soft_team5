@@ -33,8 +33,9 @@ asr.json 에는 스키마가 허락한 칸만 쓴다. 모델·옵션은 passes[]
 같은 캐시로 다시 조립하면 바이트가 같다(시각·난수·걸린 시간은 넣지 않음). 캐시를 지우고 처음부터 다시 받아쓰면 같다는
 보장은 없다: 확신이 낮은 묶음은 faster-whisper 가 온도를 올려 무작위로 다시 뽑는다(묶음 열에 하나꼴, 씨앗 없음).
 
-뒤 단계(align)가 불러 쓰는 것: load_model, transcribe_clip, encode_clip, force_text, chunks, pads, vad_path, chunk_path,
-chunk_key, film_lock, record_words, film_records, pass_word_stats, speech_holes, film_rescue_fragments, film_habits.
+다른 모듈이 불러 쓰는 것은 film_habits 하나다(align 이 rescue 줄의 버릇 글귀를 거를 때). encode_clip·force_text(대본
+글을 소리에 teacher forcing), pass_word_stats·film_rescue_fragments(캐시에서 낱말별 세그먼트 통계·rescue 조각 판정을
+다시 냄)는 운영 차례에서 부르지 않고 시험과 조사용으로 열어 둔 것이다.
 시험은 set_backend(가짜) 로 모델 없이 돈다.
 """
 from __future__ import annotations
@@ -792,12 +793,6 @@ class _FilmLock:
             self.path.unlink()
         except OSError:
             pass
-
-
-def film_lock(video_sha1: str) -> _FilmLock:
-    """with film_lock(sha1): ... 그 영화의 묶음 캐시(cache/asr/{sha1})에 쓰는 동안 잡는다. 뒤 단계가 그 캐시에
-    기록을 더할 때(대본 힌트 받아쓰기 등)도 이것을 잡아야 asr 명령과 부딪히지 않는다. 이미 잡혀 있으면 RuntimeError."""
-    return _FilmLock(video_sha1)
 
 
 # ------------------------------------------------------------------ 전체 덮기 창(rescue)

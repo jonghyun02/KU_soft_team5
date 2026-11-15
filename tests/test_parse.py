@@ -165,6 +165,21 @@ def test_case02_tag_parsing_units():
     assert T.split_speaker("<우주>")[0] == "우주"
 
 
+def test_lang_cue_needs_the_language_name_standing_as_a_word():
+    """언어 표시는 언어 이름이 낱말로 서 있을 때만(뒤에 로·소리·말로 같은 꼬리 하나는 된다). 말뭉치에서 나온 오판 꼴."""
+    for cue, lang in (("일어", "ja"), ("일어로", "ja"), ("일 어", "ja"), ("日", "ja"), ("日本語", "ja"), ("일본말로", "ja"),
+                      ("영어", "en"), ("영어로", "en"), ("영어 소리", "en"), ("계속 영어로", "en"), ("in broken English", "en"),
+                      ("O.S.; ENGLISH", "en"), ("I N ARABIC:", "ar"), ("중국어-자막", "zh"), ("러시아 말로", "ru"),
+                      ("말을 끊으며 러시아 말로", "ru"), ("조선말을 작은 소리로", "ko"), ("in Latin", "la"), ("LATIN", "la"),
+                      ("in German", "de"), ("accented English", "en")):
+        assert T.lang_of([cue]) == lang, cue
+    for cue in ("일어서며", "일어나며", "일어선다.", "일어나서", "일어 서며", "일 어선다.", "일어나 큰소리로",   # 동사 일어서다·일어나다
+                "Russell", "to Russell", "FINGERMAN 1", "ENGLISHMAN", "THE GERMANS", "Indicating Lesley.",  # 다른 낱말 속 글자
+                "Russian accent", "a French accent",                                                  # 말투
+                "of the Latin", '"Latin" voice', "영문 모름", "영어 선생님에게", "영어선생"):
+        assert T.lang_of([cue]) is None, cue
+
+
 # ---------------------------------------------------------------- #3 대본 언어 ≠ 대사 언어, 병기 번역
 
 def test_case03_foreign_line_with_gloss():
@@ -436,6 +451,18 @@ def test_semicolon_slash_star_speakers(sep):
     assert names(s, el(s, 2)) == ["조내시"] and el(s, 2)["text"].startswith("전하")
     assert names(s, el(s, 3)) == ["왕"]
     assert el(s, 0)["type"] == "scene" and el(s, 1)["type"] == "action"
+
+
+def test_paren_verb_starting_like_a_language_name_is_not_a_language_cue():
+    """'(일어서며)'·'(일어나며)' 는 연기 지시라 대사 lang 은 문서 언어(0.3.1 까지 일본어로 읽음). '(일어)' 는 일본어 표시."""
+    body = []
+    for k in range(6):
+        body += [(0.143, f"{k + 1}. 역 앞 - 낮"), (0.143, "두 사람이 걸어온다."),
+                 (0.143, "민수 : (일어서며) 이제 가 보자."), (0.143, "요코 : (일어) 저기 모인 사람들을 봐."),
+                 (0.143, "민수 : (일어나며) 알았어, 알았다고.")]
+    s = P.parse_rows("fmverb", _plain_rows(body))
+    assert [(el(s, k)["lang"], el(s, k)["paren"][0]["text"]) for k in (2, 3, 4)] == \
+        [("ko", "일어서며"), ("ja", "일어"), ("ko", "일어나며")]
 
 
 # ---------------------------------------------------------------- 0.2.0 규칙(합성 줄)

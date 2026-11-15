@@ -11,8 +11,11 @@
     시각). 바로잡은 줄 수는 quality.time_fixed 에, 바로잡아도 믿기 어려운 줄은 quality.time_suspect 와 항목 수준 문제로
     남기고 영화는 그대로 만든다. 화자·how·lang·paren·sung·
     overlap 은 대본 요소에서 복사, same/changed 와 차이 조각은 ``textnorm.verdict``, conf 는 ``align.op_conf``.
-    한국어 줄은 ko = heard, ko_src = same. 번역은 이 단계의 범위 밖이라, 시각 있는 대사 가운데 한국어가 아닌 줄이
-    있으면 그 영화는 실패로 두고 translation_unmatched 를 기록한다.
+    줄 언어(lang)는 글자의 기준인 영상을 따른다(``textnorm.spoken_lang``): 시각 있는 대본 대사의 lang 이 영상 언어와
+    달라도 들린 글이 영상 언어의 글자로 적혔으면(영상 언어가 ko 면 글자의 절반 이상이 한글) 영상 언어로 말한 줄로 두고,
+    그런 줄 수를 quality.lang_from_heard 와 항목 수준 문제(other)로 남긴다. 시각 없는 줄(absent)은 대본 lang 그대로.
+    한국어 줄은 ko = heard, ko_src = same. 번역은 이 단계의 범위 밖이라, 시각 있는 대사 가운데 그래도 한국어가 아닌
+    줄(들린 글이 한글이 아닌 외국어 줄)이 있으면 그 영화는 실패로 두고 translation_unmatched 를 기록한다.
  3. 대사 아닌 항목(scene, action, onscreen, transition)은 대본 글 그대로에 추정 시각.
  4. 쓰기 전에 검사: 임시 파일로 쓴 뒤 validate_final·validate_align·validate_asr 가 모두 통과해야 final.json 이 된다.
     통과하면 catalog status 를 done 으로, match 를 final 의 일치율로 맞춘다.
@@ -31,7 +34,8 @@ from collections import Counter
 from . import __version__, align, paths, textnorm, timeline, util
 
 STAGE = "final"
-VERSION = "0.2.0"          # 0.2.0: 낱말 시각 바로잡기 집계, added 의 씬·씬 구간 규칙(timeline), 문제 기록에 항목 id
+VERSION = "0.3.0"          # 0.2.0: 낱말 시각 바로잡기 집계, added 의 씬·씬 구간 규칙(timeline), 문제 기록에 항목 id
+#                            0.3.0: 줄 언어를 들린 글자로(quality.lang_from_heard), made.timing 에 시각 바로잡기 규칙 넷 모두
 SCHEMA = "sink.final/1"
 KO = "ko"
 VERSION_LABELS = ("draft", "revised", "bound", "shooting", "final", "translation", "unknown")
@@ -40,9 +44,11 @@ ROW_FIELDS = ("doc_id", "film_id", "film_title", "film_title_orig", "title_norm"
 SHOW_ERRORS = 10           # 검사 실패 때 화면에 보여 주는 오류 수
 
 TIMING_TEXT = ("aligned: 받아쓰기 낱말 시각 그대로(받아쓴 글자를 Whisper cross-attention DTW 로 소리에 맞춘 시각. "
-               "강제 정렬을 따로 돌리지 않는다). 다만 한 줄 안에서 시작 시각이 앞 낱말의 시작보다 이른 낱말은 앞 낱말의 시작으로 "
-               f"올리고, 영상 길이를 넘은 시각이 허용 오차({timeline.DURATION_TOL}초)에 닿으면 영상 끝으로 당긴다(그런 줄 수가 "
-               "quality.time_fixed). estimated: 대본 순서로 앞뒤 대사 시각 사이를 글 길이에 비례해 나눈 추정"
+               "강제 정렬을 따로 돌리지 않는다). 다만 한 줄의 낱말 시각을 넷만 바로잡는다: 영상 길이를 넘은 시각이 허용 오차"
+               f"({timeline.DURATION_TOL}초)에 닿으면 영상 끝으로 당기고, 시작 시각이 앞 낱말의 시작보다 이른 낱말은 앞 낱말의 "
+               "시작으로 올리고, 끝이 시작보다 이른 낱말은 끝을 시작에 맞추고, 줄 전체가 한 순간(가장 이른 시작 = 가장 늦은 끝)"
+               f"이면 가장 늦게 끝나는 낱말의 끝을 {timeline.MIN_DUR}초 늘린다(그런 줄 수가 quality.time_fixed). "
+               "estimated: 대본 순서로 앞뒤 대사 시각 사이를 글 길이에 비례해 나눈 추정"
                "(씬 머리·지문·화면 글자·전환, end 는 null. 한 씬의 요소는 그 씬의 대사 덩어리 곁에 둔다). "
                "씬 구간도 추정: 그 씬의 시각 있는 대본 대사와 그 씬으로 분류한 대본에 없는 말의 범위(대본 순서와 다른 자리에서 "
                "들린 대사는 뺀다), 그런 대사가 없는 씬은 씬 머리·지문의 추정 시각 범위. none: 시각 없음(absent).")
@@ -63,7 +69,10 @@ QUALITY_TEXT = ("spoken: 말 있는 대본 대사 수. silent_turns: 말 없는 
                 "time_suspect: 바로잡았지만 시각을 믿기 어려운 줄의 항목 id(영상 길이 밖의 낱말이 있었거나 시작 시각이 "
                 f"{timeline.FAR_BACK_S}초 넘게 뒤집혀 있었음). pass_overlaps: 서로 다른 받아쓰기 pass 에서 온 두 줄의 시간 "
                 f"구간이 {timeline.SAME_SOUND_S}초 넘게 겹친 곳 [앞 항목 id, 뒤 항목 id, 겹친 초](같은 소리가 두 줄에 "
-                "들어갔을 수 있는 곳. 시각만으로는 단정할 수 없어 막지 않고 적어 둔다).")
+                "들어갔을 수 있는 곳. 시각만으로는 단정할 수 없어 막지 않고 적어 둔다). lang_from_heard: 대본 lang 이 영상 "
+                "언어와 다른데 들린 글이 영상 언어의 글자로 적혀(글자의 "
+                f"{textnorm.LANG_SCRIPT_SHARE:.0%} 이상) lang 을 영상 언어로 둔 시각 있는 대본 대사 수.")
+LANG_FROM_HEARD_TEXT = "대본 lang {script}, 들린 글은 영상 언어 {video} 글자: lang 을 {video} 로 둠"
 TIME_SUSPECT_TEXT = (f"낱말 시각을 바로잡았지만 믿기 어려움(영상 길이 밖의 낱말이 있었거나 시작 시각이 "
                      f"{timeline.FAR_BACK_S}초 넘게 뒤집혀 있었음)")
 
@@ -193,6 +202,10 @@ def build(doc: dict, script: dict, asr: dict, al: dict) -> dict:
             ref = {"el": e["id"], "text": str(e.get("text") or "")}
         diffs: list[dict] = []
         if timed and e is not None:
+            said = textnorm.spoken_lang(lang, heard, film_lang)       # 글자의 기준은 영상: 들린 글자로 줄 언어
+            if said != lang:
+                lang = said
+                cnt["lang_from_heard"] += 1
             want, diffs = textnorm.verdict(ref["text"], heard)
             if want != status:
                 raise Stale(f"{it['id']}({e['id']}) 의 op 은 {status} 인데 지금 대본 글로는 {want}")
@@ -294,15 +307,18 @@ def build(doc: dict, script: dict, asr: dict, al: dict) -> dict:
             "by_pass": dict(sorted(by_pass.items())), "diff_kinds": dict(sorted(kinds.items())),
             "time_fixed": cnt["time_fixed"], "time_fixed_words": cnt["time_fixed_words"], "time_suspect": suspects,
             "pass_overlaps": [[a, b, sec] for a, b, sec in timeline.cross_pass_overlaps(ops, index)],
+            "lang_from_heard": cnt["lang_from_heard"],
         },
     }
 
 
-def problems(doc_id: str, film_id: str, data: dict) -> list[dict]:
-    """final.json 내용에서 영화·항목 수준 문제(align 단계와 같은 기준, 같은 글). detail 에는 수치만 적는다.
+def problems(doc_id: str, film_id: str, data: dict, script: dict | None = None) -> list[dict]:
+    """final.json 내용에서 영화·항목 수준 문제(align 단계와 같은 기준, 같은 글). detail 에는 수치·코드만 적는다.
 
     낱말 시각을 바로잡았지만 믿기 어려운 줄(quality.time_suspect)은 그 줄만 항목 수준 other 로 남긴다(영화는 그대로 만든다).
     서로 다른 받아쓰기 pass 에서 온 줄끼리 시간이 겹친 곳(quality.pass_overlaps)도 뒤 줄에 항목 수준 other 로 남긴다.
+    script(script.json)를 주면 대본 lang 과 다른 lang 을 들린 글자로 정한 줄(quality.lang_from_heard)도 항목 수준 other 로
+    남긴다. 항목 수준 문제는 종류마다 영화당 ``align.ITEM_PROBLEMS_MAX`` 개까지.
     """
     q = data["quality"]
     path = f"films/{film_id}/final.json"
@@ -317,6 +333,15 @@ def problems(doc_id: str, film_id: str, data: dict) -> list[dict]:
         out.append({"level": "item", "doc_id": doc_id, "film_id": film_id, "item_id": b, "problem": "other",
                     "score": sec, "detail": f"다른 받아쓰기 pass 에서 온 줄 {a} 과 시간 구간이 {sec:.3f}초 겹침"
                                             "(같은 소리가 두 줄에 들어갔을 수 있음)", "path": path})
+    if script is not None:
+        els = {e["id"]: e for e in script.get("elements") or []}
+        video, doc_lang = data["film"]["video"]["lang"], data["film"]["script"]["lang"]
+        moved = [(it["id"], els[it["src_el"]].get("lang") or doc_lang) for it in data["items"]
+                 if it["type"] == "dialogue" and it["start"] is not None and it["src_el"] in els
+                 and it["lang"] != (els[it["src_el"]].get("lang") or doc_lang)]
+        for iid, lang in moved[:align.ITEM_PROBLEMS_MAX]:
+            out.append({"level": "item", "doc_id": doc_id, "film_id": film_id, "item_id": iid, "problem": "other",
+                        "score": None, "detail": LANG_FROM_HEARD_TEXT.format(script=lang, video=video), "path": path})
     return out
 
 
@@ -383,8 +408,9 @@ def process(doc: dict, *, force: bool = False) -> tuple[str, str, float | None]:
         return "skip", "", old.get("match")
 
     base = {"doc_id": doc_id, "film_id": film_id, "item_id": "", "path": f"films/{film_id}/final.json"}
+    script = util.read_json(sp)
     try:
-        data = build(doc, util.read_json(sp), util.read_json(ap), util.read_json(lp))
+        data = build(doc, script, util.read_json(ap), util.read_json(lp))
     except NeedsTranslation as e:
         util.set_problems(STAGE, film_id, [dict(base, level="film", problem="translation_unmatched", score=e.count,
                                                 detail=str(e), path=f"films/{film_id}/work/align.json")])
@@ -413,7 +439,7 @@ def process(doc: dict, *, force: bool = False) -> tuple[str, str, float | None]:
         util.set_problems(STAGE, film_id, [dict(base, level="film", problem="other", score=len(errs), detail=msg)])
         return "fail", msg, None
 
-    util.set_problems(STAGE, film_id, problems(doc_id, film_id, data))
+    util.set_problems(STAGE, film_id, problems(doc_id, film_id, data, script))
     match = data["film"]["script"]["match"]
     util.set_stage_fp(STAGE, film_id, dict(fp, out_sha1=util.sha1_file(out), match=match))
     q = data["quality"]

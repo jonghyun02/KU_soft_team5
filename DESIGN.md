@@ -7,6 +7,8 @@
 - `-I`는 필수다. 원본 대본은 인터넷에서 받은 신뢰할 수 없는 데이터라 실행하지 않고, 원본이 있는 폴더를 현재 폴더로 두고 파이썬을 돌리지 않는다.
 - 원본 `filmmakers_scripts/`(= 명세 `raw/`)에는 쓰지 않는다(`paths.assert_not_raw`, `util.write_*`가 막음).
 - 모든 파일 쓰기는 `util.write_json / write_jsonl / write_text`(원자적, UTF-8)로 한다. 글자는 `util.nfc`. ffmpeg 처럼 외부 프로그램이 직접 쓰는 큰 파일은 다른 이름으로 쓴 뒤 `os.replace`.
+- 코어 의존성(`pyproject.toml` 의 dependencies)에는 코어 코드가 직접 쓰는 psutil(convert·hancom_worker 의 한컴 프로세스 찾기)과
+  numpy(ocr·media 의 그림·소리 배열)도 적는다(전에는 다른 패키지를 따라 딸려 왔다).
 - 선택 의존성: 받아쓰기는 `pip install -e .[asr]`(faster-whisper 1.2.1 고정), GPU 로 받아쓰려면 `.[asr,asr-gpu]`(cuBLAS, cuDNN 9). ffmpeg·ffprobe 는 PATH 에, claude 는 llm 단계와 `align --llm` 에만 필요하다.
 
 ## 흐름과 파일
@@ -34,10 +36,15 @@ validate  schema/*.schema.json + 의미 규칙                              -> �
 - `films/{film_id}/work/` 에는 `asr.json`·`align.json` 만 둔다. validate 가 work/ 의 `*.json` 을 모두 검사하므로 다른 중간물은 `cache/` 에 둔다.
 - `videos/`, `films/` 는 git 에 넣지 않는다(영상, 전사 전문, 대본 대사). `films/` 는 영상과 전사 캐시가 있어야 다시 만들 수 있다. `cache/` 도
   git 에 들어가지 않으므로 전사 묶음 캐시(`cache/asr`)는 그 PC 에만 있다.
+- 저장소에 든 실제 대본 글: `tests/gold/*.jsonl`(파서 정답 창 26개, 파일마다 40~45줄, 합 1,150줄)과 `tests/fixtures/parse/*.jsonl`(15개,
+  글이 든 줄이 파일마다 15~40줄, 합 456줄)은 원본 대본 줄의 글(text 칸)을 그대로 담는다. 2026-11-13 커밋(d1955de, 정답 창은 6fa14c3 에도)부터
+  들어 있다(`tests/gold/raw/` 의 a·b 표시 파일에는 text 칸이 없다). 이것을 위 방침의 예외로 둘지, text 칸을 해시·줄 번호로 바꾸고 원문은
+  `docs/` 에서 읽어 채점할지는 사용자 결정 대기다.
 - 반면 `catalog.csv` 의 영상 칸·match·status 는 git 에 들어간다. validate [D1] 은 catalog 에서 영상이 있는 대표 문서마다
   `films/{film_id}/final.json` 을 요구하고 `sinkprep all` 은 validate 의 종료코드를 돌려주므로(`pipeline.run`), 영상·전사 캐시·films/ 가 없는
   새 클론에서는 `all` 이 '[D1] … final.json 이 없음' 으로 1로 끝난다. 같은 까닭으로 영상을 등록한 영화는 final 까지 만들어야 validate 를
-  통과한다(final 이 translation_unmatched·Stale·검사 실패로 멈춘 영화가 하나라도 있으면 `all` 이 1).
+  통과한다(final 이 translation_unmatched·Stale·검사 실패로 멈춘 영화가 하나라도 있으면 `all` 이 1). 그런 영화를 영상 쪽에서 빼는 것은
+  `video --unregister`(영상 등록 약속).
 
 ## catalog.csv
 명세 4.3 그대로. 추가 약속:
@@ -111,6 +118,8 @@ lines의 `src`: hwp, doc, docx, rtf, pdf_text, ocr, txt, xls(엑셀 표 대본: 
 - 파일: 규칙 판 `cache/parse_rules/{doc}.json`(parse 가 쓴 바이트 그대로), LLM 판 `cache/parse_llm/{doc}.json`(늘),
   `docs/{doc}/script.json` = LLM 판이 validate 를 통과하고 품질 지표가 뚜렷이 나쁘지 않으면(문제 수가 늘지 않고 score 가 0.03 넘게
   떨어지지 않음) LLM 판, 아니면 규칙 판. 정답 표본에서 LLM 판이 모든 묶음에서 더 정확해 LLM 판을 기본으로 둔다(notes/llm_parse.md).
+  정답 표본(tests/gold)은 Claude 서브에이전트(llm.MODEL 과 같은 claude-opus-5-5) 둘이 따로 표시하고 갈린 줄을 셋째 서브에이전트가 판정한
+  것이다(사람 정답 아님).
   dropped·front 줄을 규칙 판보다 max(20, 5%) 넘게 늘린 판, 조각이 하나라도 실패한 판은 쓰지 않는다.
   parser.name `sink-parse-llm`, parser.version `{VERSION}+{PROMPT_VERSION}`.
 - 지문 `cache/state/llm/{doc}.json`: 조립 버전·프롬프트 버전·모델·effort·그림 여부·parse 버전·lines sha1·규칙 판 sha1 + 결과
@@ -140,10 +149,21 @@ lines의 `src`: hwp, doc, docx, rtf, pdf_text, ocr, txt, xls(엑셀 표 대본: 
 - `videos/{film_id}{확장자}` 로 하드링크하고 안 되면 복사한다. 원본 영상은 고치거나 옮기지 않는다.
 - 소리와 대응표를 다 만든 뒤에야 catalog 영상 칸을 쓴다(소리를 못 꺼낸 영상이 catalog 에 남지 않게).
 - `--lang` 이 없으면 그 영화에 이미 적힌 `video_lang` 을 지키고, 그것도 없으면 한국영화 게시판(ko_film) 문서는 ko, 아니면 unknown.
+  지역 꼬리가 붙은 값(`ko-KR`, `en-US`)은 기본 언어(`ko`, `en`)로 줄여 적고 까닭을 출력한다(`video.base_lang`). final 이 줄 언어를
+  기본 언어로 견주기 때문이다. 꼴이 틀린 값은 받지 않는다. 다만 catalog 를 손으로 고쳐 넣은 `ko-KR` 은 validate 가 막지 않고, 그러면 final 의
+  added 줄이 모두 한국어가 아닌 줄로 잡혀 translation_unmatched 로 멈춘다.
 - 그 영화에 sha1 이 다른 영상이 이미 있으면 `--force` 가 있어야 바꾸고, 바꾸면 `videos/` 의 옛 파일을 지운다(옛 영상의 cache 는 남음).
   값이 같고 새로 만든 것이 없으면 skip.
 - 영상 sha1 은 `cache/state/filesha1/` 에 경로·크기·고친 시각과 함께 캐시한다(내용이 바뀌어도 크기와 시각이 같으면 못 본다).
   그래서 asr 가 그 영상을 처음 받아쓸 때 한 번 다시 읽어 catalog 의 `video_sha1` 과 견준다.
+
+**등록 해제(`sinkprep video --unregister --docs <doc_id> [--force]`, `video.unregister`)**
+- 영상 경로와 `--lang` 없이 쓴다. 그 문서의 film_id 의 모든 문서 행에서 영상 칸 넷과 `match` 를 비우고, status 가 aligned·done 이면 parsed 로
+  되돌린다(`catalog.finalize` 한 번). asr·align·final 의 문제 기록(`cache/problems/{stage}/{film_id}.json`)을 `util.set_problems(…, [])` 로 지운다.
+- `videos/{film_id}.*` 는 다른 하드링크가 있는 파일(`st_nlink > 1`, 원본이 다른 링크로 남음)과 `.part` 만 지운다. 링크가 하나뿐인 파일은 링크를
+  못 해 복사한 사본인지 원본 자체인지 알 수 없어 `--force` 일 때만 지운다.
+- `films/{film_id}/` 결과, `cache/audio` 의 wav·대응표, `cache/asr`, `cache/state/{asr,align,final}/{film_id}.json` 은 지우지 않고 남은 것을 출력한다.
+  다시 등록하면 같은 캐시를 이어 쓴다. 바뀐 것이 없으면 skip.
 
 **시각과 소리(media)**
 - 결과물(asr.json, align.json, final.json)의 모든 시각은 영상 시각 = 컨테이너 PTS − 컨테이너 시작 시각(format start_time), 0 이상이다.
@@ -155,7 +175,8 @@ lines의 `src`: hwp, doc, docx, rtf, pdf_text, ocr, txt, xls(엑셀 표 대본: 
   0.002초 넘게 바뀌면 새 구간이다.
 - 검증: 패킷 수 × 패킷 길이가 wav 길이와 0.1초 안, 소리 끝의 영상 시각이 소리 스트림 끝과 0.1초 안(어긋나도 컨테이너 길이와
   맞으면 받는다). 실패할 때만 틈을 무음으로 메워(`media.PAD_FILTER`) 다른 이름으로 뽑고, 길이를 확인한 뒤에만 wav 와 바꾸며
-  mode 를 padded 로 적는다. 대응표와 wav 는 길이가 맞아야 짝이다(`load_timemap`).
+  mode 를 padded 로 적는다. 대응표와 wav 는 길이가 맞아야 짝이다. 운영 차례(video·asr)는 `build_timemap` 이 이 짝 검사(`_fits`)를 하고 짝이
+  아니면 다시 만든다. 읽기만 하는 `load_timemap` 은 같은 검사를 하는 시험·조사용 함수다.
 - ffprobe 정보 300초, 패킷 표 1800초, 소리 추출 7200초를 넘으면 `MediaError`.
 
 **받아쓰기(`sinkprep asr`)**
@@ -163,7 +184,8 @@ lines의 `src`: hwp, doc, docx, rtf, pdf_text, ocr, txt, xls(엑셀 표 대본: 
 - 옵션: `--passes id=모델[,id=모델]`(모델 large-v3-turbo(= turbo), large-v3), `--rescue`/`--no-rescue`, `--device auto|cpu|cuda`,
   `--threads`(기본 6). `--passes`·`--device`·`--rescue` 를 주지 않으면 그 영화의 단계 지문 값을 이어 쓰고, 처음이면 `asr.DEFAULT_*`
   (plain=large-v3-turbo, auto, rescue 없음). 기본값은 asr.py 한 곳에만 둔다.
-- 장치: auto 는 CUDA 장치가 있고 여유 VRAM(nvidia-smi)이 5000MiB 이상일 때만 cuda float16, 아니면 cpu int8. cuda 는 열 때
+- 장치: auto 는 CUDA 장치가 있고 여유 VRAM(nvidia-smi)이 5000MiB 이상일 때만 cuda float16, 아니면 cpu int8. nvidia-smi 가 PATH 에 없거나
+  실패하면 여유를 0 으로 보아 경고 없이 cpu 다(`asr.free_vram_mib`). cuda 는 열 때
   한 번 인코딩해 보고, 실패하면 auto 는 cpu 로 가고 `--device cuda`(또는 지문의 장치가 cuda 인 영화를 옵션 없이 돌린 것)는 오류
   (`AsrUnavailable`)다. cuda 를 열기 전에 `site-packages/nvidia/*/bin`(선택 의존성 asr-gpu 의 cuBLAS·cuDNN)을 DLL 찾는 길에 더한다.
   모델은 한 번에 하나만 올리고 로컬 캐시를 먼저 찾는다.
@@ -210,8 +232,8 @@ lines의 `src`: hwp, doc, docx, rtf, pdf_text, ocr, txt, xls(엑셀 표 대본: 
   뽑아 wav 를 바꾼다. 그러면 소리 종류가 padded 가 되어 묶음 캐시 열쇠가 모두 빗나가므로 다시 받아써야 한다. `windows.json` 열쇠가
   다르면 소리 전체를 읽어 창도 다시 나눈다. 그래서 `media.VERSION` 을 올린 뒤에는 `all` 이 아니라 `sinkprep asr` 로 먼저 돌린다.
 - `cache/asr/{video_sha1}` 은 다시 만들 수 없는 결과물로 다룬다(온도 되돌이에 씨앗이 없다). 큰 실행 앞뒤로 `backup/` 에 사본을 두어야 한다.
-  2026-11-15 현재 추격자의 묶음 캐시(CPU·GPU, turbo·large-v3 네 폴더와 vad.json, windows.json)는 사본이 없고 `cache/` 는 git 에도
-  들어가지 않아 이 PC 에만 있다(할 일).
+  추격자의 묶음 캐시(CPU·GPU, turbo·large-v3 네 폴더와 vad.json, windows.json, 파일 3,396개)는 `backup/asr_cache_20261115.zip` 에 사본이
+  있다(2026-11-15 바이트 대조로 모두 같음). `backup/` 도 gitignore 라 같은 PC 에만 있고, PC 밖 사본은 할 일이다.
 - 끝난 받아쓰기를 캐시에서 읽는 공개 함수: `film_records`, `pass_word_stats`, `speech_holes`, `film_rescue_fragments`, `film_habits`. 지금 뒤
   단계가 부르는 것은 align 의 `film_habits` 하나뿐이고, 나머지는 읽기용으로 열어 둔 함수다(`speech_holes` 는 asr 안에서 쓴다). 소리에 글을 맞춰
   점수를 내는 `encode_clip`·`force_text` 와 힌트를 주는 `transcribe_clip(hotwords=, initial_prompt=)` 도 있지만 지금 align 은 쓰지 않는다
@@ -220,7 +242,10 @@ lines의 `src`: hwp, doc, docx, rtf, pdf_text, ocr, txt, xls(엑셀 표 대본: 
 ## 맞추기 약속 (textnorm.py, align.py, align_llm.py)
 
 **입출력.** `docs/{doc_id}/script.json` + `work/asr.json` → `work/align.json`(sink.align/1: script_doc, asr_sha1, method, ops, scenes).
-op 하나 = 최종본 대사 항목 하나(명세 C2). 입력은 이 둘 말고도 셋이 더 있다: 버릇 글귀(`align.film_habits` → `asr.film_habits`, asr 단계 지문의
+op 하나 = 최종본 대사 항목 하나(명세 C2). `scenes` 는 대본 씬마다 `{scene, start, end, how}` 이고 그 씬의 시각 있는 대본 대사(added 는 넣지
+않음)만으로 잡는다: 옮겨진 줄이 절반을 넘으면 그 줄들의 범위(how moved), 아니면 옮겨진 줄을 뺀 범위이고 닻으로 맞춘 줄이 있으면 anchors,
+없으면 lines, 시각 있는 대사가 없으면 start·end null 에 none. final.json 의 씬 구간(`timeline.scene_spans`)은 그 씬으로 분류한 added 도 넣고
+대사가 없는 씬은 추정 시각을 쓰므로 둘은 다를 수 있다(추격자: 구간 있는 align 씬 93개 가운데 51개). CBoE 가 읽는 것은 final 쪽이다. 입력은 이 둘 말고도 셋이 더 있다: 버릇 글귀(`align.film_habits` → `asr.film_habits`, asr 단계 지문의
 `tags` 로 `cache/asr` 의 rescue 창 기록을 읽음), LLM 짝 판정 캐시(`cache/llm`), catalog `video_duration`(항목 추정 시각과 time_fix).
 같은 script.json·asr.json·받아쓰기 캐시(버릇 글귀)·LLM 캐시·영상 길이면 align.json 바이트가 같다. 받아쓰기 캐시나 asr 지문이 없거나 읽히지
 않으면 `align.film_habits` 가 빈 dict 를 돌려주고 조용히 넘어가므로, 버릇 글귀 거르기가 빠진 다른 align.json 이 나오고 지문의
@@ -277,8 +302,12 @@ op 하나 = 최종본 대사 항목 하나(명세 C2). 입력은 이 둘 말고�
 범위가 겹치지 않고, 다른 pass 의 줄끼리는 같은 소리인 낱말(`_same_word`: 겹친 시간이 짧은 쪽 낱말 길이의 절반 이상)을 함께 갖지 않는다
 (`_Claims`). 다른 pass 에서 고른 줄이 덮은 기준 낱말은 added 로 세지 않는다. 한 대사가 두 pass 에 나뉘어 있으면 지금은 한 줄로 묶지 못한다.
 
-**rescue.** 아무도 못 맞춘 줄만 찾는다. 한 줄의 범위가 다른 pass 의 말을 건너뛰어 이어지지 못한다. 줄에 안 쓰인 rescue 낱말은 기준 pass 의
-낱말·묶음과 어느 줄의 시간 범위와도 겹치지 않고, 바로 뒤 0.3초 안에 같은 소리(자모 닮음 0.8)로 시작하는 다른 pass 의 낱말이 없을 때만 added 가 된다.
+**rescue.** 아무도 못 맞춘 줄만 찾는다. 한 줄의 범위가 다른 pass 의 말을 건너뛰어 이어지지 못한다. 줄에 안 쓰인 rescue 낱말은 다음 넷 가운데
+하나라도 맞으면 added 로 만들지 않는다(`rescue_skip`): (가) 낱말 가운데 시각이 기준 pass 의 묶음(asr.json chunks) 안, (나) 기준 pass 낱말과 같은
+소리(`_same_word`: 겹친 시간이 짧은 쪽 길이의 절반 이상), (다) 그 낱말 시작부터 끝 + `RESCUE_ECHO_S`(0.3초) 사이에 다른 pass 의 낱말(기준 pass
+낱말과 대안 pass 에서 고른 줄의 낱말)이 같은 소리(자모 닮음 `RESCUE_ECHO_SIM` 0.8 이상)로 시작, (라) 이미 다른 줄이 가진 낱말. 다른 줄의 시간
+범위와 겹치는지는 보지 않으므로 rescue added 가 다른 줄과 시간이 겹칠 수 있다(추격자: rescue added 66줄 가운데 8줄, I0484 가 I0485 를 품음).
+`method.choose`(`align.CHOOSE_TEXT`)의 '어느 줄의 시간 범위와도 겹치지 않고' 는 이 구현과 다르다(글을 고치려면 align.json 이 바뀌므로 코드 쪽 할 일).
 
 **여러 pass 다시 짝짓기(`_repair_across`).** pass 를 다 고른 뒤, 고른 줄(어느 pass 든) 사이 창에서 못 맞춘 줄과 기준·rescue 의 남은 낱말을
 시각 차례로 섞어 한 번 더 다시 짝짓는다. pass 가 바뀌는 곳에서 끊어 한 줄의 범위는 한 pass 안에 있고, 다른 pass 줄과 소리가 겹치는 짝은 버린다.
@@ -354,20 +383,31 @@ asr.json, 영상 길이)으로 다시 불러 같은 항목 뼈대를 얻는다. 
 - 차례·시각·씬 규칙이 바뀌면 `timeline.VERSION` 을 올린다. align 과 final 의 단계 지문에 들어간다.
 
 **final.**
-- 대사 항목: words 는 op.asr 범위의 낱말(w, s, e, p)을 바로잡은 시각으로 복사한 것이고, heard 는 w 를 공백으로 이은 글이다. 화자, how, lang,
-  paren, sung, overlap, scene, script_ref.text 는 대본 요소에서 복사한다. status·diffs 는 `textnorm.verdict`, conf 는 `align.op_conf`.
+- 대사 항목: words 는 op.asr 범위의 낱말(w, s, e, p)을 바로잡은 시각으로 복사한 것이고, heard 는 w 를 공백으로 이은 글이다. 화자, how,
+  paren, sung, overlap, scene, script_ref.text 는 대본 요소에서 복사하고, lang 은 대본 요소의 lang 에 아래 줄 언어 규칙을 적용한 값이다. status·diffs 는 `textnorm.verdict`, conf 는 `align.op_conf`.
   한국어 줄은 `ko = heard`, `ko_src = same`.
 - 화자: 대본에 적힌 화자만 `speaker_from=script`. `speaker_inferred` 요소는 화자를 복사하되 `speaker_from=unknown` 으로 두고, added 는 화자
   없이 unknown 이다. `quality.speaker_unknown` 은 unknown 인 대사 수, `quality.speaker_inferred` 는 그 가운데 추정 화자가 붙은 수.
 - 대사 아닌 항목은 대본 글 그대로에 추정 시각.
-- 번역은 범위 밖이다. 시각 있는 대사 가운데 lang 이 ko 가 아닌 줄(대본 요소의 lang, added 는 영상 언어)이 하나라도 있으면 final.json 을
-  만들지 않고 영화 수준 `translation_unmatched`(score = 그런 줄 수)를 남긴다. 이 영화는 영상이 등록돼 있으므로 validate [D1] 과 `sinkprep all`
-  도 실패한다(흐름과 파일 절). 시각 없는 줄(absent)의 lang 은 세지 않는다.
+- 줄 언어(lang, final 0.3.0): 글자의 기준은 영상이다. 시각 있는 대본 대사는 `textnorm.spoken_lang(대본 lang, heard, 영상 언어)` 로 정한다.
+  대본 lang 과 영상 언어의 기본 언어(지역 꼬리를 뗀 값)가 다르고 들린 글이 영상 언어 글자로 적혔으면 영상 언어, 아니면 대본 lang 그대로다.
+  `textnorm.in_lang_script(글, 언어)`: NFC 뒤 문자(isalpha)만 세어 그 언어 글자가 `LANG_SCRIPT_SHARE`(0.5) 이상이면 참. ko 는 한글 음절
+  (AC00–D7A3)·자모(1100–11FF)·호환 자모(3130–318F), ja 는 가나와 한자, zh 는 한자, ru 는 키릴, en·fr·es·de·it·pt·nl·la·vi 는 라틴 글자. 그 밖의
+  언어이거나 글자가 없으면(숫자·문장부호뿐) 거짓. 바꾼 줄은 ko = heard, ko_src = same 이고, 수를 `quality.lang_from_heard` 에, 줄마다 항목 수준
+  other(detail `대본 lang {x}, 들린 글은 영상 언어 {y} 글자: lang 을 {y} 로 둠`, 영화당 `align.ITEM_PROBLEMS_MAX` 50개까지)를 남긴다.
+  absent 는 대본 lang 그대로, added 는 영상 언어다. 한계: 영어로 말했는데 받아쓰기(영상 언어로 고정)가 한글로 적은 줄도 ko 가 되어 번역 대상에서
+  빠지고, 들린 글이 숫자뿐인 줄은 판정하지 못해 대본 lang 이 남는다.
+- 번역은 범위 밖이다. 그래도 시각 있는 대사 가운데 lang 이 ko 가 아닌 줄이 하나라도 있으면 final.json 을 만들지 않고 영화 수준
+  `translation_unmatched`(score = 그런 줄 수, detail 에 시각 있는 대사 수와 언어별 줄 수)를 남긴다. 이 영화는 영상이 등록돼 있으므로
+  validate [D1] 과 `sinkprep all` 도 실패한다(흐름과 파일 절). 시각 없는 줄(absent)의 lang 은 세지 않는다.
 - 낡은 align.json 거부(`Stale`): item id, script_doc, op 판정과 지금 대본 글의 판정, `method.stats.match` 가운데 하나라도 어긋나면 멈추고
   `align --force` 로 다시 맞추라고 알린다. catalog 의 video_sha1 과 asr.json 의 video_sha1 이 다르거나 video_duration 이 비면 멈춘다.
 - `made`: pipeline, asr(pass 마다 모델 문자열), aligner, final, timing, scene, forced, conf, match, speaker, quality 의 뜻을 글로 남긴다.
+  timing 글에는 낱말 시각 바로잡기 규칙 넷(영상 끝으로 당김, 앞 낱말 시작으로 올림, 끝을 시작에 맞춤, 한 순간인 줄의 끝을 `timeline.MIN_DUR`
+  0.02초 늘림)을 모두 적는다(final 0.3.0).
   `quality`: dialogue, same, changed, added, absent, spoken, silent_turns, absent_spoken, line_coverage(same + changed ÷ spoken), match, mean_conf,
-  low_conf, moved, words, by_pass, diff_kinds, speaker_unknown, speaker_inferred, mean_word_p, time_fixed, time_fixed_words, time_suspect, pass_overlaps.
+  low_conf, moved, words, by_pass, diff_kinds, speaker_unknown, speaker_inferred, mean_word_p, time_fixed, time_fixed_words, time_suspect, pass_overlaps,
+  lang_from_heard.
 - 쓰기 전 검사: `final.json.check` 로 쓴 뒤 `validate_final`, `validate_align`(final 과 함께), `validate_asr` 가 모두 통과해야 `final.json` 으로
   바꾼다. 실패하면 쓰지 않고, 문제 기록에는 오류 코드별 수와 항목 id 다섯 개까지만 적는다(대사 글을 넣지 않는다).
 - catalog: 만들었거나(skip 포함) 일치율이 있으면 `status=done`, `match` = final 의 일치율. 실패했는데 done 이던 행은 aligned 로 내린다.
@@ -375,7 +415,9 @@ asr.json, 영상 길이)으로 다시 불러 같은 항목 뼈대를 얻는다. 
 
 **미리보기 자막(`tools/final_to_srt.py <film_id|final.json> [--out] [--absent] [--width 42]`).** 기본 출력 `films/{film_id}/preview.srt`.
 시각 있는 대사(same, changed, added)만, 글은 heard. 화자 이름이 있으면 `이름: `(추정 화자는 `이름?: `), added 는 `[+] `, `--absent` 면 absent 를
-앞 대사가 끝난 자리에 `[없음] 이름: 대본 글` 로 끼운다(말 없는 대사는 뺌). 긴 줄은 낱말 시각으로 잘라 한 자막에 두 줄(한 줄 `--width` 자 이하)까지.
+앞 대사가 끝난 자리에 `[없음] 이름: 대본 글` 로 끼운다(말 없는 대사는 뺌). 시각 있는 두 줄 사이의 absent 는 한 자막으로 묶어 둘까지는 한 줄씩,
+셋 이상이면 첫 줄 아래에 `[없음] … 외 N줄` 로 쓰고, 다음 자막 시작까지 0.5~2초(`ABSENT_MIN`·`ABSENT_SHOW`) 보인다. 그래서 다음 자막과 겹칠 수
+있다. 긴 줄은 낱말 시각으로 잘라 한 자막에 두 줄(한 줄 `--width` 자 이하)까지이고, 시간으로는 나누지 않는다.
 final.json 의 words 만 읽으므로 어느 pass 에서 온 줄이든 같은 꼴이다. 확인용이고 CBoE 의 자막 칸 나누기를 대신하지 않는다.
 
 ## 문제 기록
@@ -396,7 +438,8 @@ problem 값: extract_broken, ocr_low, parse_low_dialogue, speaker_missing, versi
 | align, final | item | asr_low_conf | same·changed·added 줄의 conf < 0.2(영화당 50개까지) |
 | align, final | item | other | 낱말 시각을 바로잡았지만 믿기 어려운 줄 |
 | final | item | other | 다른 pass 에서 온 줄과 시간 구간이 0.6초 넘게 겹침 |
-| final | film | translation_unmatched | 시각 있는 대사에 한국어가 아닌 줄(score = 줄 수) |
+| final | item | other | 대본 lang 대신 들린 글자로 lang 을 영상 언어로 정한 줄(`quality.lang_from_heard`, 영화당 50개까지) |
+| final | film | translation_unmatched | 들린 글자로 봐도 시각 있는 대사에 한국어가 아닌 줄이 남음(score = 줄 수) |
 | align | film | other | 검사 실패(오류 코드별 수), 예외(이름만, `_fail`) |
 | final | film | other | 검사 실패(오류 코드별 수), FinalError(낡은 align.json `Stale`, video 칸 문제 등) |
 
@@ -412,7 +455,8 @@ problem 값: extract_broken, ocr_low, parse_low_dialogue, speaker_missing, versi
 건너뛴다(`--force`면 다시). key 는 문서 단계가 doc_id, 영상 쪽 단계(asr, align, final)가 film_id 다. 실패하거나 일부만 된 결과에는 지문을 남기지
 않아 다음 실행이 다시 한다. 결과 파일 sha1(`out_sha1`)이 지문과 다르면 다시 만든다.
 - asr: VERSION, DECODE_VERSION, video_sha1, lang, passes, device(풀린 장치가 아니라 인자 문자열: GPU 상태 때문에 다시 만들지 않게. 다만 인자를
-  바꾸면 다시 조립하고 그때 풀린 장치의 캐시를 쓰므로 asr.json 의 판이 바뀔 수 있다: 받아쓰기 약속의 '장치와 asr.json'), rescue,
+  바꾸면 다시 조립하고 그때 풀린 장치의 캐시를 쓰므로 asr.json 의 판이 바뀔 수 있다: 받아쓰기 약속의 '장치와 asr.json'. 지문이 cuda 인 영화에
+  `--device auto` 를 줘도 글자가 달라 다시 조립하고, cuda 로 풀리면 묶음이 모두 캐시에 있어도 열어 보느라 모델을 GPU 에 올린다), rescue,
   models(저장소@스냅숏, 라이브러리 판), 대응표·묶음·창의 sha1. 묶음 캐시 폴더 꼬리표(`tags`)는 견주지 않는 칸.
 - align: VERSION, timeline.VERSION, script·asr sha1, 영상 길이, 버릇 글귀 sha1, LLM 판정 해시(`llm_pair`).
 - final: VERSION, align.VERSION, timeline.VERSION, 패키지 판, script·asr·align sha1, final 에 들어가는 catalog 칸(`final.ROW_FIELDS`).
@@ -421,14 +465,15 @@ problem 값: extract_broken, ocr_low, parse_low_dialogue, speaker_missing, versi
 | 상수 | 지금 | 올리는 때 |
 |---|---|---|
 | `lines.VERSION` | 0.4.1 | 줄 만들기가 바뀔 때(ocr 의 글자층 검사 캐시 열쇠에도 들어감) |
-| `parse.VERSION` | 0.3.1 | 파서 규칙이 바뀔 때 |
+| `parse.VERSION` | 0.3.2 | 파서 규칙이 바뀔 때 |
 | `media.VERSION` | 0.2.0 | 대응표 규칙(대응표의 made 가 달라져 다시 만듦) |
-| `video.VERSION` | 0.2.0 | 등록 규칙 |
 | `asr.VERSION` / `DECODE_VERSION` / `VAD_VERSION` / `WINDOW_VERSION` | 0.3.0 / 1 / 1 / 1 | 조립·rescue 규칙 / 받아쓰기 호출(묶음 캐시 열쇠) / 말 구간 찾기 / 창 나누기 |
 | `timeline.VERSION` | 0.2.0 | 차례·시각·씬 규칙 |
 | `align.VERSION` | 0.4.0 | 맞추기·고르기·conf 규칙 |
 | `align_llm.PROMPT_VERSION` | ap2 | 프롬프트·스키마·창 표시(LLM 캐시 열쇠) |
-| `final.VERSION` | 0.2.0 | 조립·quality·문제 기록 |
+| `final.VERSION` | 0.3.0 | 조립·quality·문제 기록·made 글 |
+
+video 단계에는 VERSION 이 없다(지문 없이 catalog 값과 견줘 건너뛴다. 전에 있던 `video.VERSION` 은 아무 곳에서도 읽지 않아 지웠다).
 
 `asr.DECODE` 표는 묶음 캐시 열쇠에 그대로 들어가므로 칸을 바꾸면 VERSION 을 올리지 않아도 캐시가 전부 빗나간다.
 
@@ -501,8 +546,18 @@ problem 값: extract_broken, ocr_low, parse_low_dialogue, speaker_missing, versi
   이어진 내부·외부·내·외 는 place, 구분자로 떨어진 실내·실외·내부·외부는 time 쪽이다.
 - 정답 표본 수치는 0.2.5 와 줄 단위까지 같다(표본이 이번 규칙이 닿는 줄을 거의 담지 않음). 추격자는 HWP 문단 구조와 견줘 말 차례 1,034개의
   화자와 씬 195개가 모두 맞지만, 그 문서를 보며 만든 규칙이라 일반화 근거는 아니다. `tools/make_types.py` 분기 표에는 0.3.x 꼬리표
-  넷(scene_colon_heads, paren_names, wordless_turns, tight_cont)과 types.csv 의 spacing 칸을 더했으나, `TYPES.md`·`types.csv` 는 아직 다시
-  만들지 않았다(2026-11-13 판). `REPORT.md`(`tools/make_report.py`)도 같은 2026-11-13 판이다.
+  넷(scene_colon_heads, paren_names, wordless_turns, tight_cont)과 types.csv 의 spacing 칸을 더했다. `TYPES.md`·`types.csv`·`REPORT.md` 는
+  2026-11-15 에 lines 0.4.1·parse 0.3.2 와 영상 쪽 결과(REPORT 6b·7절)를 반영해 다시 만들었다.
+
+**parse 0.3.2 (언어 표시).**
+- 괄호 지시·화자 꼬리표의 언어 표시(`parse_text.lang_of`, `LANG_CUES`)는 언어 이름이 낱말로 서 있을 때만 받는다(`_lang_rx`): 앞은 글자가
+  아니고, 뒤에는 꼬리 하나(로·으로·로만·만·도·을·를·소리·말·말로·대사·자막)만 붙을 수 있다. 한글 이름은 글자 사이 공백을 받는다('러시아 말로',
+  '한국 어'). 그래서 '(일어서며)'·'(일어나며)' 같은 동사, 'Russell'·'ENGLISHMAN' 같은 다른 낱말 속 글자는 언어 표시가 아니다.
+- '일어' 뒤에 공백을 건너 서·선·나·난 등이 오면 줄바꿈으로 갈라진 동사로 본다. 이름 뒤에 accent 가 오면('(Russian accent)') 언어 표시가 아니다.
+  latin·thai 는 꼬리표가 그 이름뿐이거나 'in 이름' 일 때만 받는다. '영문' 은 말뭉치에서 '(영문 모름)' 처럼 까닭이라는 뜻으로만 나와 이름에서 뺐다.
+  이름이 꼬리표 열쇠의 절반 이상이어야 하는 예전 조건은 그대로다.
+- 바뀐 것은 대사 요소의 lang 뿐이다(684문서 가운데 186문서 379요소: ja→ko 367 등). 요소 수·종류·id·글·화자·씬은 그대로이고, 정답 표본 채점도
+  전·후가 같다. 한국어 대표 대본 368개에서 lang 이 ko 가 아닌 대사는 248문서 2,460줄에서 141문서 2,121줄이 됐다(OVERVIEW 2.6절).
 
 **검사(validate)에 더한 규칙.**
 - [D1] 인자 없이 돌릴 때: catalog 에서 video_path 가 있고 is_primary=true 인 영화마다 `films/{film_id}/final.json` 이 있고, 그 final 의
@@ -513,9 +568,12 @@ problem 값: extract_broken, ocr_low, parse_low_dialogue, speaker_missing, versi
 - [D4] match=text 인 줄은 same 이면 `textnorm.key(heard) == key(script_ref.text)`, changed 면 다르다.
 - [D8] script.json 을 찾았을 때 그 scene·action·dialogue·onscreen·transition 요소가 src_el 로 빠짐없이 나온다. 같은 src_el 을 가리키는 항목이
   둘 이상이면 오류(script.json 없이도 본다).
-- [D9] script.json 을 찾았을 때 대본에서 복사한 칸이 대본과 같다: 대사의 speakers·how·lang(match=text 인 줄만)·paren·sung·overlap·scene·
-  script_ref.text, speaker_from=script 면 대본에 적힌 화자(추정 화자가 아님), 대사 아닌 항목의 text·scene·kind, 씬의 number·heading·place·time·flags,
+- [D5] ko·ko_src·lang 이 맞물리고(lang=ko 면 ko_src=same·ko=heard), 시각 있는 대사의 들린 글이 영상 언어 글자면 lang 이 영상 언어다
+  (`textnorm.spoken_lang`, final 과 같은 함수).
+- [D9] script.json 을 찾았을 때 대본에서 복사한 칸이 대본과 같다: 대사의 speakers·how·lang(match=text 인 줄만. 시각 있는 줄은 대본 lang 을
+  `textnorm.spoken_lang` 으로 정한 값과 견줌)·paren·sung·overlap·scene·script_ref.text, speaker_from=script 면 대본에 적힌 화자(추정 화자가 아님), 대사 아닌 항목의 text·scene·kind, 씬의 number·heading·place·time·flags,
   인물의 name·aliases. 씬 구간의 start 는 그 씬 항목들의 시각 범위 안이고, 시각 있는 항목이 있는 씬만 구간이 있다. 오류 글에는 칸 이름만 적는다.
+- [Q] script.json 을 찾았을 때 `quality.lang_from_heard` 가 대본 lang 과 다른 시각 있는 대사 수와 같다.
 - [C2] final 의 대사 항목 words(w, s, e, p)가 그 op 의 asr 범위 낱말과 같다(`timeline.op_words` 로 바로잡은 값). 같은 pass 의 같은 낱말을 두
   op 이 갖지 않는다. added op 에는 asr 범위가 있다. `films/{id}/final.json` 자리의 파일은 film.id 가 폴더 이름과 같다.
 - 짝 파일은 자동으로 찾는다: final 은 film.script.doc_id 의 `docs/{doc}/script.json`, align 은 같은 work/ 의 asr.json 과 위 폴더의 final.json.
@@ -523,7 +581,7 @@ problem 값: extract_broken, ocr_low, parse_low_dialogue, speaker_missing, versi
 
 **그 밖.**
 - review 는 aligned·done 을 지키고 대표 대본을 match 먼저 고른다(catalog.csv 절). 영상 쪽 단계의 영화 수준 문제가 needs_review 에 오른다.
-- `__main__`: 명령 video(`--lang`), asr(`--passes`, `--threads`, `--device`, `--rescue`), align(`--llm`), final 을 더했다. `all --llm` 은 llm 단계에만
+- `__main__`: 명령 video(`--lang`, `--unregister`), asr(`--passes`, `--threads`, `--device`, `--rescue`), align(`--llm`), final 을 더했다. `all --llm` 은 llm 단계에만
   쓰이고 align 의 LLM 짝 판정은 all 에서 늘 캐시만 쓴다.
 - `paths`: `AUDIO`(cache/audio), `ASR_CACHE`(cache/asr), `VIDEOS`(videos). 경로는 호출 시점에 `paths.X` 로 읽는다(시험이 바꿔 끼운다).
 - `.gitignore` 에 `films/`, `videos/` 를 더했다.

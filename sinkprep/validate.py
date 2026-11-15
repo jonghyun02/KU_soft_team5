@@ -11,10 +11,13 @@ final 의미 규칙 가운데 비교가 필요한 것
   [D2] start < end, 낱말이 줄 안, heard = words, 시각이 영상 길이 안(DURATION_TOL), 줄 안 낱말 시작 시각이 줄지 않음
   [D4] changed 는 diffs 있음·same 은 없음, 그리고 글자로 맞춘 줄(match=text)은 same 이면 heard 와 script_ref.text 의
        열쇠(textnorm.key: 공백·문장부호 뺀 글자열)가 같고 changed 면 다름
+  [D5] ko·ko_src·lang 이 맞물림, 그리고 시각 있는 대사의 들린 글이 영상 언어의 글자면 lang 은 영상 언어
+       (textnorm.spoken_lang: final 이 줄 언어를 정하는 바로 그 함수)
   [D8] 참조가 실제로 있음, 그리고 script.json 의 scene·action·dialogue·onscreen·transition 요소가 빠짐없이 한 번씩 나옴
   [D9] CBoE 가 final.json 만 읽고 쓰는 칸이 믿을 만함: script.json 을 찾았을 때 대본에서 복사한 칸(대사의 speakers·how·
        lang·paren·sung·overlap·scene·script_ref.text, 대사 아닌 항목의 text·scene·kind, 씬의 number·heading·place·time·
-       flags, 인물의 name·aliases)이 대본과 같고, 씬 구간이 그 씬 항목들의 시각과 어긋나지 않음
+       flags, 인물의 name·aliases)이 대본과 같고(lang 은 시각 있는 줄이면 textnorm.spoken_lang 으로 정한 값),
+       씬 구간이 그 씬 항목들의 시각과 어긋나지 않음
 align 의 [C2]
        같은 pass 의 같은 낱말을 두 op 이 갖지 않음(timeline.shared_words), added op 에 asr 범위가 있음,
        final·asr 을 함께 볼 때 대사 항목의 words(w, s, e, p)가 그 op 의 asr 범위 낱말과 같음(시각은 timeline.op_words 가
@@ -892,8 +895,9 @@ def _script_elements(script_path: Path | None, errs: _Errs, who: str
         return None, None, None
 
 
-def _copied_diffs(it: dict, e: dict) -> list[str]:
-    """final 항목 it 이 대본 요소 e 에서 복사한 칸 가운데 대본과 다른 칸 이름(명세 4.7: CBoE 가 script.json 없이 쓰는 칸)."""
+def _copied_diffs(it: dict, e: dict, video_lang: str | None = None) -> list[str]:
+    """final 항목 it 이 대본 요소 e 에서 복사한 칸 가운데 대본과 다른 칸 이름(명세 4.7: CBoE 가 script.json 없이 쓰는 칸).
+    시각 있는 대사의 lang 은 대본 lang 을 textnorm.spoken_lang(들린 글, 영상 언어 video_lang)으로 정한 값과 견준다."""
     bad = []
     if it.get("scene") != e.get("scene"):
         bad.append("scene")
@@ -914,9 +918,12 @@ def _copied_diffs(it: dict, e: dict) -> list[str]:
         bad.append("speaker_from")                       # 대본에 적힌 화자가 아닌데(없거나 이어받은 추정) script
     if it.get("how") != (e.get("how") or "unknown"):
         bad.append("how")
-    # lang 은 글자로 맞춘 줄만 대본 그대로다(뜻으로 맞춘 줄은 들린 말의 언어)
-    if it.get("match") == "text" and isinstance(e.get("lang"), str) and it.get("lang") != e["lang"]:
-        bad.append("lang")
+    # lang 은 글자로 맞춘 줄만 대본에서 온다(뜻으로 맞춘 줄은 들린 말의 언어). 시각 있는 줄은 글자의 기준이 영상이라
+    # 대본 lang 이 영상 언어와 달라도 들린 글이 영상 언어의 글자면 영상 언어(final 과 같은 함수)
+    if it.get("match") == "text" and isinstance(e.get("lang"), str):
+        want = textnorm.spoken_lang(e["lang"], it.get("heard"), video_lang) if _is_num(it.get("start")) else e["lang"]
+        if it.get("lang") != want:
+            bad.append("lang")
     if it.get("paren") != [{"text": p.get("text"), "at": p.get("at")} for p in e.get("paren") or [] if isinstance(p, dict)]:
         bad.append("paren")
     if it.get("sung") != bool(e.get("sung")):
@@ -957,6 +964,8 @@ def validate_final(path, script_path=None) -> list[str]:
     # D2: 모든 시각은 영상 길이 안(허용 오차 DURATION_TOL)
     video = film.get("video") if isinstance(film.get("video"), dict) else {}
     dur = video.get("duration") if _is_num(video.get("duration")) and video["duration"] > 0 else None
+    video_lang = video.get("lang") if isinstance(video.get("lang"), str) else None
+    from_heard = 0
     late: list[str] = []
 
     def too_late(*ts) -> bool:
@@ -1015,9 +1024,12 @@ def validate_final(path, script_path=None) -> list[str]:
             elif typ is not None and s_els[src_el].get("type") != typ:
                 errs.add(f"[D8] {w}: 항목 종류 {typ!r} 와 src_el {src_el} 의 종류 {s_els[src_el].get('type')!r} 가 다름")
             else:                                  # D9: 대본에서 복사한 칸(글은 적지 않고 칸 이름만 알린다)
-                bad = _copied_diffs(it, s_els[src_el])
+                bad = _copied_diffs(it, s_els[src_el], video_lang)
                 if bad:
                     errs.add(f"[D9] {w}: 대본 요소 {src_el} 에서 복사한 칸이 대본과 다름: {', '.join(bad)}")
+                if "lang" not in bad and typ == "dialogue" and it.get("match") == "text" and _is_num(it.get("start")) \
+                        and isinstance(s_els[src_el].get("lang"), str) and it.get("lang") != s_els[src_el]["lang"]:
+                    from_heard += 1                # 대본 lang 대신 들린 글자로 정한 줄(quality.lang_from_heard)
         if typ != "dialogue":
             continue
 
@@ -1114,6 +1126,9 @@ def validate_final(path, script_path=None) -> list[str]:
                 errs.add(f"[D5] {w}: lang=ko 인데 ko 와 heard 가 다름")
         if ko_src == "same" and lang != "ko":
             errs.add(f"[D5] {w}: ko_src=same 인데 lang={lang!r}")
+        # 글자의 기준은 영상: 시각 있는 줄의 들린 글이 영상 언어의 글자면 영상 언어로 말한 줄이다(final 과 같은 함수)
+        if _is_num(st) and isinstance(lang, str) and textnorm.spoken_lang(lang, heard, video_lang) != lang:
+            errs.add(f"[D5] {w}: 들린 글이 영상 언어 {video_lang} 의 글자인데 lang={lang!r} (영상 언어여야 함)")
         # D6
         if it.get("match") == "translation" and diffs:
             errs.add(f"[D6] {w}: match=translation 인데 diffs 가 {len(diffs)}개 있음")
@@ -1177,6 +1192,8 @@ def validate_final(path, script_path=None) -> list[str]:
         for k, v in counts.items():
             if type(q.get(k)) is int and q[k] != v:
                 errs.add(f"[Q] quality.{k}={q[k]} 인데 items 로 센 값은 {v}")
+        if s_els is not None and type(q.get("lang_from_heard")) is int and q["lang_from_heard"] != from_heard:
+            errs.add(f"[Q] quality.lang_from_heard={q['lang_from_heard']} 인데 대본 lang 과 다른 시각 있는 대사는 {from_heard}줄")
     return errs.done()
 
 

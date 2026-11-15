@@ -98,7 +98,8 @@ def test_register_default_lang_and_replacing_video(proj):
     src = make_video(proj / "f.mp4")
     assert video.register(src, "fm5")[0] == "ok"
     assert by_id()["fm5"]["video_lang"] == "unknown" and by_id()["fm5"]["video_path"] == "videos/local_0003.mp4"
-    assert video.register(src, "fm5", "en-US")[0] == "ok" and by_id()["fm5"]["video_lang"] == "en-US"
+    st, msg = video.register(src, "fm5", "en-US")                          # 지역 꼬리는 기본 언어로 줄여 적고 까닭을 알린다
+    assert st == "ok" and by_id()["fm5"]["video_lang"] == "en" and "'en-US' 는 기본 언어 'en' 로 줄여 적음" in msg
     other = make_video(proj / "g.mp4", freq=880)
     with pytest.raises(media.MediaError):                                  # 같은 영화에 다른 영상: --force 없이는 거절
         video.register(other, "fm5", "en-US")
@@ -231,3 +232,82 @@ def test_register_writes_catalog_only_after_audio_is_ready(proj, monkeypatch):
     media.audio_path(sha).unlink()
     assert video.register(src, "fm1")[0] == "ok" and media.audio_path(sha).is_file()
     assert video.register(src, "fm1")[0] == "skip"
+
+
+def test_base_lang_cuts_region_tails():
+    assert video.base_lang("ko") == ("ko", "") and video.base_lang("mixed") == ("mixed", "")
+    lang, why = video.base_lang("ko-KR")
+    assert lang == "ko" and "기본 언어 'ko'" in why
+    with pytest.raises(ValueError):
+        video.base_lang("Korean")
+
+
+# ---------------------------------------------------------------- 등록 해제
+def _film_outputs(film=FILM):
+    """맞추기·최종본이 남기는 것(시험용 가짜): films/ 결과, 단계 문제 기록, catalog status·match."""
+    (paths.FILMS / film / "work").mkdir(parents=True, exist_ok=True)
+    (paths.FILMS / film / "final.json").write_text("{}", encoding="utf-8")
+    for stage in video.FILM_STAGES:
+        util.set_problems(stage, film, [{"level": "film", "doc_id": "fm1", "film_id": film, "item_id": "",
+                                         "problem": "other", "score": None, "detail": "x", "path": ""}])
+    util.set_stage_fp("final", film, {"version": "x"})
+    catalog.finalize(updates={"fm1": {"status": "done", "match": "0.613"}})
+
+
+@needs_ffmpeg
+def test_unregister_clears_catalog_problems_and_the_hardlink_but_keeps_results_and_cache(proj):
+    src = make_video(proj / "밖" / "원본.mp4")
+    before = src.read_bytes()
+    assert video.register(src, "fm1")[0] == "ok"
+    sha = util.sha1_file(src)
+    _film_outputs()
+    other_film = {d: dict(by_id()[d]) for d in ("fm3", "fm4", "fm5")}
+    st, msg = video.unregister("fm2")                                     # 그 영화의 어느 문서로 불러도 된다
+    assert st == "ok" and "catalog 2행" in msg and "문제 기록 지움(asr, align, final)" in msg
+    rows = by_id()
+    for d in ("fm1", "fm2"):
+        assert all(rows[d][c] == "" for c in video.COLUMNS) and rows[d]["match"] == ""
+    assert rows["fm1"]["status"] == "parsed" and rows["fm2"]["status"] == "parsed" and rows["fm1"]["is_primary"] == "true"
+    assert {d: rows[d] for d in other_film} == other_film                   # 제외 문서와 다른 영화는 그대로
+    assert not (paths.VIDEOS / f"{FILM}.mp4").exists()                    # 하드링크만 지움
+    assert src.read_bytes() == before                                     # 원본은 그대로
+    assert not any((paths.PROBLEMS / s / f"{FILM}.json").exists() for s in video.FILM_STAGES)
+    assert (paths.FILMS / FILM / "final.json").is_file() and media.audio_path(sha).is_file()   # 결과·캐시는 남김
+    assert f"films/{FILM}/ 파일 1개" in msg and f"cache/state/final/{FILM}.json" in msg and sha in msg
+    assert validate.validate_catalog(check_files=False) == []
+    assert video.unregister("fm1")[0] == "skip"
+    assert video.register(src, "fm1")[0] == "ok" and by_id()["fm1"]["video_sha1"] == sha       # 다시 등록할 수 있다
+
+
+@needs_ffmpeg
+def test_unregister_keeps_a_single_link_copy_unless_forced(proj, monkeypatch):
+    """하드링크를 못 해 복사한 영상(링크 하나)은 원본인지 알 수 없어 --force 일 때만 지운다."""
+    src = make_video(proj / "v.mp4")
+
+    def no_link(a, b):
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(video.os, "link", no_link)
+    assert video.register(src, "fm1")[0] == "ok"
+    dst = paths.VIDEOS / f"{FILM}.mp4"
+    st, msg = video.unregister("fm1")
+    assert st == "ok" and dst.is_file() and "videos/ 에 남김" in msg and "--force" in msg
+    st, msg = video.unregister("fm1", force=True)
+    assert st == "ok" and not dst.exists() and src.is_file() and f"videos/ 지움: {FILM}.mp4" in msg
+    assert video.unregister("fm1", force=True)[0] == "skip"
+
+
+def test_unregister_rejects_unknown_doc(proj):
+    with pytest.raises(KeyError):
+        video.unregister("fm999")
+
+
+def test_run_unregister_takes_docs_and_no_video(proj, capsys):
+    ns = dict(cmd="video", limit=None, force=False, workers=None, unregister=True)
+    _film_outputs()
+    assert video.run(argparse.Namespace(paths=["a.mp4"], docs="fm1", lang=None, **ns)) == 1     # 영상 경로는 받지 않음
+    assert video.run(argparse.Namespace(paths=[], docs="fm1", lang="ko", **ns)) == 1
+    assert capsys.readouterr().err.count("쓰는 법") == 2
+    assert video.run(argparse.Namespace(paths=[], docs="fm1", lang=None, **ns)) == 0
+    out = capsys.readouterr().out
+    assert "[1/1] fm1 ok:" in out and "video: {'ok': 1}" in out and by_id()["fm1"]["status"] == "parsed"

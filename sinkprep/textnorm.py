@@ -113,6 +113,65 @@ def sayable(text: str | None) -> bool:
     return bool(key(text))
 
 
+# ------------------------------------------------------------------ 글자 종류(줄 언어)
+
+LANG_SCRIPT_SHARE = 0.5    # 들린 글을 영상 언어로 말한 것으로 보는, 글자 가운데 그 언어 글자의 비율(이상)
+_LATIN_LANGS = frozenset(("en", "fr", "es", "de", "it", "pt", "nl", "la", "vi"))
+
+
+def _letter_kind(c: str) -> str:
+    o = ord(c)
+    if 0xAC00 <= o <= 0xD7A3 or 0x1100 <= o <= 0x11FF or 0x3130 <= o <= 0x318F:
+        return "hangul"
+    if 0x3040 <= o <= 0x30FF or 0x31F0 <= o <= 0x31FF:
+        return "kana"
+    if 0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF or 0xF900 <= o <= 0xFAFF:
+        return "han"
+    if 0x0400 <= o <= 0x04FF:
+        return "cyrillic"
+    if c.isascii() or 0x00C0 <= o <= 0x024F:
+        return "latin"
+    return "other"
+
+
+def _lang_kinds(lang: str | None) -> frozenset[str]:
+    """언어 코드(지역 꼬리는 뗀다: ko-KR -> ko) -> 그 언어를 적는 글자 종류. 모르는 언어면 빈 집합."""
+    base = str(lang or "").split("-")[0].lower()
+    if base == "ko":
+        return frozenset(("hangul",))
+    if base == "ja":
+        return frozenset(("kana", "han"))
+    if base == "zh":
+        return frozenset(("han",))
+    if base == "ru":
+        return frozenset(("cyrillic",))
+    return frozenset(("latin",)) if base in _LATIN_LANGS else frozenset()
+
+
+def in_lang_script(text: str | None, lang: str | None) -> bool:
+    """글이 lang 의 글자로 적혔나: 글자(문자) 가운데 그 언어 글자(ko 면 한글)가 ``LANG_SCRIPT_SHARE`` 이상이면 참.
+    글자가 하나도 없거나(숫자·문장부호뿐) lang 의 글자를 모르면 거짓.
+
+    final 이 줄 언어를 정할 때 쓴다(글자의 기준은 영상): 대본 요소의 lang 이 영상 언어와 달라도 들린 글이 영상 언어의
+    글자로 적혔으면 그 줄은 영상 언어로 말한 것이다. validate 의 D5·D9 가 같은 함수로 본다."""
+    kinds = _lang_kinds(lang)
+    letters = [c for c in unicodedata.normalize("NFC", text or "") if c.isalpha()]
+    if not kinds or not letters:
+        return False
+    return sum(_letter_kind(c) in kinds for c in letters) >= LANG_SCRIPT_SHARE * len(letters)
+
+
+def spoken_lang(script_lang: str | None, heard: str | None, video_lang: str | None) -> str | None:
+    """시각 있는 대본 대사의 줄 언어(final 의 lang). 대본 lang 이 영상 언어와 다르고(지역 꼬리는 뗀 기본 언어로 견줌)
+    들린 글이 영상 언어의 글자로 적혔으면(``in_lang_script``) 영상 언어, 아니면 대본 lang 그대로.
+    대본의 언어 표시가 틀렸거나('(일어서며)' 를 일본어로 읽음) 배우가 대본과 달리 영상 언어로 말한 줄이다."""
+    def base(x):
+        return str(x or "").split("-")[0].lower()
+    if base(script_lang) != base(video_lang) and in_lang_script(heard, video_lang):
+        return video_lang
+    return script_lang
+
+
 # ------------------------------------------------------------------ 숫자·영문 읽기
 
 _DIGIT = "공일이삼사오육칠팔구"
@@ -851,7 +910,10 @@ def diffs(script_text: str, heard: str) -> list[dict]:
       filler   한쪽에만 있는 말이 통째 낱말이고 모두 그 자리에서 군말이다(어, 음, 쉼표 붙은 그·저·뭐).
                군말이 다른 군말로 바뀐 것도 filler.
       repeat   한쪽에만 있는 말이 옆 낱말의 되풀이거나 뒤 낱말의 앞머리다(더듬기). 끝소리를 늘인 것(야 / 야아)도.
-      spelling 같은 말의 다른 표기: 소리가 같거나 굳은 표기 흔들림만 다르다(``spelling_like``).
+      spelling 같은 말의 다른 표기: 소리가 같거나 굳은 표기 흔들림만 다르다. 안쪽 함수 same_sound 가 정한다:
+               ``spelling_like`` 와 같은 소리 나는 꼴(_sound)·니 접기(_fold_ni)를 다른 구간에만 견주되, 그 구간 때문에
+               앞 글자의 끝소리나 뒤 글자의 첫소리가 달라지면 spelling 이 아니다(``spelling_like`` 는 낱말
+               둘을 통째로 견주는 같은 규칙이고 시험이 쓴다).
       word     그 밖(낱말이 바뀜·빠짐·더해짐. 받아쓰기의 비슷한 소리 오류도 여기다).
     합쳐진 구간의 종류는 word > number > spelling > repeat > filler 순으로 가장 무거운 것이다.
     """

@@ -25,7 +25,7 @@ from . import parse_layout as PL
 from . import parse_text as T
 
 STAGE = "parse"
-VERSION = "0.3.1"
+VERSION = "0.3.2"          # 0.3.2: 언어 표시는 언어 이름이 낱말로 서 있을 때만('(일어서며)' 를 일본어로 읽지 않음, parse_text.lang_of)
 PARSER_NAME = "sink-parse"
 
 TH_TYPED = 0.85
@@ -1510,8 +1510,6 @@ class DocParser:
                             p["lines"].extend(e["lines"][1:])
                             p.setdefault("merged", 0)
                             p["merged"] += 1
-                            if len(e["lines"]) == 1:
-                                pass
                             continue
             out.append(e)
         return out

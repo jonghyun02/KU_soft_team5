@@ -1,6 +1,7 @@
 """영상 등록(video): 영상 파일 하나를 한 영화에 잇고 catalog 의 영상 칸을 채운다.
 
 python -I -m sinkprep video <영상 경로> --docs <doc_id> [--lang ko] [--force]
+python -I -m sinkprep video --unregister --docs <doc_id> [--force]
 
 하는 일
 1. 그 문서의 film_id 를 찾는다.
@@ -12,9 +13,16 @@ python -I -m sinkprep video <영상 경로> --docs <doc_id> [--lang ko] [--force
    한 번에 쓴다(소리를 못 꺼낸 영상이 catalog 에 남지 않게).
 
 --lang 이 없으면 그 영화에 이미 적힌 video_lang 을 그대로 두고, 그것도 없으면 한국영화 게시판(ko_film) 문서는 ko,
-아니면 unknown. 이미 같은 값이고 새로 만든 것이 없으면 skip.
+아니면 unknown. 지역 꼬리가 붙은 값(ko-KR, en-US)은 기본 언어(ko, en)로 줄여 적는다: 뒤 단계(final)가 줄 언어를
+기본 언어로 견주므로 ko-KR 을 그대로 두면 대본에 없는 말 전부가 한국어가 아닌 줄로 잡힌다.
+이미 같은 값이고 새로 만든 것이 없으면 skip.
 그 영화에 다른 영상(sha1 이 다름)이 이미 등록돼 있으면 확장자와 상관없이 --force 가 있어야 바꾼다. 바꾸면
 videos/ 에 남은 그 영화의 옛 파일을 지운다(원본은 건드리지 않는다. 옛 영상의 cache 는 남는다).
+
+등록 해제(--unregister): 그 영화의 모든 문서 행에서 영상 칸 넷과 match 를 비우고, status 가 aligned·done 이면 parsed
+로 되돌리고, 그 영화의 asr·align·final 문제 기록을 지운다. videos/{film_id}.* 는 다른 하드링크가 있는 파일(원본이
+따로 있음)만 지우고, 링크가 하나뿐인 파일(링크를 못 해 복사했거나 원본 자체)은 --force 일 때만 지운다.
+films/{film_id}/ 의 결과와 캐시(cache/audio, cache/asr, cache/state)는 지우지 않고 남은 것을 알린다.
 """
 from __future__ import annotations
 
@@ -28,10 +36,22 @@ from pathlib import Path
 from . import media, paths
 
 STAGE = "video"
-VERSION = "0.2.0"
 LANG_RE = re.compile(r"^([a-z]{2,3}(-[A-Za-z0-9]{2,8})?|mixed|unknown)$")
 COLUMNS = ("video_path", "video_sha1", "video_duration", "video_lang")
-USAGE = "쓰는 법: python -I -m sinkprep video <영상 경로> --docs <doc_id> [--lang ko]"
+FILM_STAGES = ("asr", "align", "final")          # 등록 해제 때 문제 기록을 지우는 영화 단계
+USAGE = ("쓰는 법: python -I -m sinkprep video <영상 경로> --docs <doc_id> [--lang ko]\n"
+         "        python -I -m sinkprep video --unregister --docs <doc_id> [--force]")
+
+
+def base_lang(lang: str) -> tuple[str, str]:
+    """(적을 언어 값, 줄인 까닭 또는 빈 글). 'ko-KR' -> ('ko', 까닭). 꼴이 틀리면 ValueError."""
+    if not LANG_RE.match(lang):
+        raise ValueError(f"--lang 값이 언어 코드 꼴이 아님: {lang!r} (ko, en, ja, mixed, unknown ...)")
+    base = lang.split("-")[0]
+    if base == lang:
+        return lang, ""
+    return base, (f"언어 {lang!r} 는 기본 언어 {base!r} 로 줄여 적음(final 이 줄 언어를 기본 언어로 견주므로 "
+                  "지역 꼬리를 남기면 대본에 없는 말이 모두 외국어 줄로 잡힘)")
 
 
 def link_video(src: Path, film_id: str, sha1: str, *, force: bool = False) -> tuple[Path, str]:
@@ -99,8 +119,7 @@ def register(video, doc_id: str, lang: str | None = None, *, force: bool = False
         raise ValueError(f"film_id 가 없는 문서: {doc_id}")
     # --lang 이 없으면 앞서 등록할 때 준 언어를 지킨다(다시 등록했다고 ko·unknown 으로 돌아가지 않게)
     lang = lang or (row.get("video_lang") or "").strip() or ("ko" if row.get("category") == "ko_film" else "unknown")
-    if not LANG_RE.match(lang):
-        raise ValueError(f"--lang 값이 언어 코드 꼴이 아님: {lang!r} (ko, en, ja, mixed, unknown ...)")
+    lang, lang_note = base_lang(lang)
     src = Path(video)
     if not src.is_file():
         raise FileNotFoundError(f"영상 파일이 없음: {video}")
@@ -143,18 +162,89 @@ def register(video, doc_id: str, lang: str | None = None, *, force: bool = False
            f"언어 {lang}, catalog {len(updates)}행 갱신 | {gap_note(tm)}")
     if removed:
         msg += f" | 옛 파일 지움: {', '.join(removed)}"
+    if lang_note:
+        msg += f" | {lang_note}"
     return ("ok" if updates or how in ("link", "copy") or made or removed else "skip"), msg
+
+
+def unregister(doc_id: str, *, force: bool = False) -> tuple[str, str]:
+    """doc_id 의 영화에서 영상 등록을 지운다(맨 위 설명의 '등록 해제'). ("ok"|"skip", 설명)."""
+    from . import catalog, util
+
+    rows = catalog.load()
+    row = next((r for r in rows if r["doc_id"] == doc_id), None)
+    if row is None:
+        raise KeyError(f"catalog 에 없는 doc_id: {doc_id}")
+    film_id = row.get("film_id") or ""
+    if not film_id:
+        raise ValueError(f"film_id 가 없는 문서: {doc_id}")
+    sha1s = {r["video_sha1"] for r in rows if r.get("film_id") == film_id and r.get("video_sha1")}
+    updates = {}
+    for r in rows:
+        if r.get("film_id") != film_id:
+            continue
+        want = {c: "" for c in COLUMNS + ("match",)}
+        if r.get("status") in ("aligned", "done"):
+            want["status"] = "parsed"
+        if any((r.get(c) or "") != v for c, v in want.items()):
+            updates[r["doc_id"]] = want
+    if updates:
+        catalog.finalize(updates=updates)
+    cleared = []
+    for stage in FILM_STAGES:
+        if (paths.PROBLEMS / stage / f"{film_id}.json").exists():
+            util.set_problems(stage, film_id, [])
+            cleared.append(stage)
+    removed, kept = [], []
+    for p in sorted(paths.VIDEOS.glob(f"{film_id}.*")) if paths.VIDEOS.is_dir() else []:
+        if not p.is_file():
+            continue
+        if p.stat().st_nlink > 1 or force or p.suffix.lower() == ".part":
+            try:
+                p.unlink()
+                removed.append(p.name)
+            except OSError as e:
+                print(f"  ! videos/{p.name} 을 지울 수 없음: {e}", file=sys.stderr, flush=True)
+                kept.append(p.name)
+        else:
+            kept.append(p.name)
+    left = []
+    fdir = paths.FILMS / film_id
+    if fdir.is_dir():
+        n = sum(1 for p in fdir.rglob("*") if p.is_file())
+        left.append(f"films/{film_id}/ 파일 {n}개")
+    for sha in sorted(sha1s):
+        for p in (media.audio_path(sha), media.timemap_path(sha)):
+            if p.exists():
+                left.append(p.relative_to(paths.ROOT).as_posix() if p.is_relative_to(paths.ROOT) else str(p))
+    for stage in FILM_STAGES:
+        if util.stage_fp(stage, film_id) is not None:
+            left.append(f"cache/state/{stage}/{film_id}.json")
+    msg = (f"{film_id}: catalog {len(updates)}행 영상 칸·match 비움"
+           + (f", 문제 기록 지움({', '.join(cleared)})" if cleared else "")
+           + (f", videos/ 지움: {', '.join(removed)}" if removed else ""))
+    if kept:
+        msg += (f" | videos/ 에 남김(다른 하드링크가 없어 원본이거나 복사본일 수 있음, 지우려면 --force): "
+                f"{', '.join(kept)}")
+    if left:
+        msg += " | 지우지 않고 남긴 결과·캐시: " + ", ".join(left)
+    return ("ok" if updates or cleared or removed else "skip"), msg
 
 
 def run(args) -> int:
     vids = list(getattr(args, "paths", None) or [])
     docs = [d for d in (getattr(args, "docs", None) or "").split(",") if d]
-    if len(vids) != 1 or len(docs) != 1:
+    drop = bool(getattr(args, "unregister", False))
+    if len(docs) != 1 or len(vids) != (0 if drop else 1) or (drop and getattr(args, "lang", None)):
         print(USAGE, file=sys.stderr, flush=True)
         return 1
     t0 = time.time()
+    force = bool(getattr(args, "force", False))
     try:
-        st, msg = register(vids[0], docs[0], getattr(args, "lang", None), force=bool(getattr(args, "force", False)))
+        if drop:
+            st, msg = unregister(docs[0], force=force)
+        else:
+            st, msg = register(vids[0], docs[0], getattr(args, "lang", None), force=force)
     except Exception as e:  # noqa: BLE001
         print(f"  ! {docs[0]}: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         print(f"{STAGE}: {{'error': 1}} ({time.time() - t0:.0f}초)", flush=True)

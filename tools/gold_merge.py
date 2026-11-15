@@ -1,4 +1,5 @@
-"""두 사람이 붙인 정답을 맞춰 보고, 갈린 줄만 판정해 최종 정답 파일을 만든다.
+"""따로 붙인 정답 두 벌(a·b: Claude 모델 서브에이전트 둘이 표시, 사람 정답 아님)을 맞춰 보고, 갈린 줄의 판정(r.json)을
+반영해 최종 정답 파일을 만든다. tests/gold 의 판정은 셋째 서브에이전트가 이 도구로 갈린 줄을 보고 썼다.
 
   .venv/Scripts/python -I tools/gold_merge.py <stem>                 # 갈린 줄 보기(stem 예: fm54897_w1)
   .venv/Scripts/python -I tools/gold_merge.py <stem> --resolve r.json   # 판정 반영해 tests/gold/<stem>.jsonl 쓰기

@@ -513,3 +513,23 @@ def test_diffs_pieces_are_whole_words_in_text_order():
             if x["heard"]:
                 ph = h.index(x["heard"].split()[0], ph)
         assert sorted(T.key(" ".join(rest_s))) == sorted(T.key(" ".join(rest_h)))
+
+
+# ------------------------------------------------------------------ 글자 종류(줄 언어)
+def test_in_lang_script_counts_letters_of_the_language():
+    """글자(문자) 가운데 그 언어 글자가 절반 이상이면 참. 숫자·문장부호는 세지 않고, 지역 꼬리는 뗀다."""
+    assert T.in_lang_script("일어서며 이제 가 보자.", "ko") and T.in_lang_script("OK 알았어요", "ko-KR")
+    assert not T.in_lang_script("Nice weather today.", "ko") and T.in_lang_script("Nice weather today.", "en")
+    assert T.in_lang_script("CCTV 봤어요 진짜", "ko") and not T.in_lang_script("CCTV 봤어", "ko")  # 한글 5/9, 2/6
+    assert T.in_lang_script("これ犬の肉だろ", "ja") and not T.in_lang_script("これ犬の肉だろ", "ko")
+    assert not T.in_lang_script("119!", "ko") and not T.in_lang_script("", "ko") and not T.in_lang_script("안녕", "th")
+
+
+def test_spoken_lang_follows_the_heard_letters_only_when_the_script_lang_differs():
+    """글자의 기준은 영상: 대본 lang 이 영상 언어와 다르고 들린 글이 영상 언어 글자면 영상 언어, 아니면 대본 lang."""
+    assert T.spoken_lang("ja", "이제 가 보자", "ko") == "ko"          # '(일어서며)' 를 일본어로 읽은 줄
+    assert T.spoken_lang("ja", "Let's go", "ko") == "ja"             # 한글이 아닌 말: 번역이 필요한 줄
+    assert T.spoken_lang("en", "Let's go", "en") == "en"
+    assert T.spoken_lang("ko", "Let's go", "ko") == "ko"             # 대본과 영상 언어가 같으면 그대로
+    assert T.spoken_lang("ko", "이제 가 보자", "ko-KR") == "ko"         # 기본 언어로 견준다
+    assert T.spoken_lang("ko", "이제 가 보자", "en") == "ko"

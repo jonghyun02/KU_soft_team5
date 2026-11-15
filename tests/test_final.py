@@ -312,26 +312,61 @@ def test_film_and_item_problems_are_recorded_without_script_text(proj):
     assert catalog.load()[0]["status"] == "done"                                # 문제가 있어도 최종본은 만든다
 
 
-def test_timed_line_in_another_language_fails_with_translation_unmatched(proj):
-    """번역은 범위 밖: 시각 있는 대사가 한국어가 아니면 그 영화는 실패, translation_unmatched 를 기록한다."""
-    def english(s):
-        next(x for x in s["elements"] if x["id"] == E["날씨"])["lang"] = "en"
-    put_film(FILM, speak(SAID), edit=english)
+def _relabel(el_key, lang, text=None):
+    def edit(s):
+        e = next(x for x in s["elements"] if x["id"] == E[el_key])
+        e["lang"] = lang
+        if text is not None:
+            e["text"] = e["raw"] = text
+    return edit
+
+
+def test_line_marked_foreign_but_heard_in_hangul_is_kept_as_the_video_language(proj):
+    """글자의 기준은 영상: 대본 lang 이 ja 로 잘못 붙은 줄('(일어서며)' 오판)이 한글로 들리면 그 줄은 ko 로 두고 영화를 만든다.
+    그런 줄 수는 quality.lang_from_heard, 줄마다 항목 수준 other(코드만). 말하지 않은(absent) 줄은 대본 lang 그대로."""
+    def edit(s):
+        _relabel("날씨", "ja")(s)
+        _relabel("영화", "ja")(s)                                         # 씬 2 는 말하지 않는다(absent)
+    put_film(FILM, speak(SAID), edit=edit)
+    sp = paths.DOCS / DOC / "script.json"
+    assert align.run(ARGS) == 0 and final.run(ARGS) == 0
+    data = util.read_json(out())
+    it = by_el(data)[E["날씨"]]
+    assert (it["status"], it["lang"], it["ko"], it["ko_src"]) == ("same", "ko", it["heard"], "same")
+    cut = by_el(data)[E["영화"]]
+    assert (cut["status"], cut["lang"], cut["ko_src"]) == ("absent", "ja", None)
+    assert data["quality"]["lang_from_heard"] == 1
+    assert validate.check_file(out()) == ("final", []) and validate.validate_final(out(), sp) == []
+    (p,) = stage_problems()
+    assert (p["level"], p["item_id"], p["problem"], p["score"]) == ("item", it["id"], "other", None)
+    assert p["detail"] == "대본 lang ja, 들린 글은 영상 언어 ko 글자: lang 을 ko 로 둠" and "날씨" not in p["detail"]
+    assert catalog.load()[0]["status"] == "done"
+
+    # 검사도 같은 규칙(textnorm.spoken_lang): 한글로 들린 줄을 대본 lang 그대로 두면 D5·D9, 집계가 어긋나면 Q
+    bad = json.loads(out().read_text(encoding="utf-8"))
+    k = next(i for i, x in enumerate(bad["items"]) if x["id"] == it["id"])
+    bad["items"][k].update(lang="ja", ko_src=None)
+    tmp = out().with_name("bad.json")
+    tmp.write_text(json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+    codes = {e.split()[0] for e in validate.validate_final(tmp, sp)}
+    assert {"[D5]", "[D9]", "[Q]"} <= codes
+    assert any("영상 언어 ko 의 글자인데 lang='ja'" in e for e in validate.validate_final(tmp, sp))
+
+
+def test_timed_line_heard_in_another_script_fails_with_translation_unmatched(proj):
+    """번역은 범위 밖: 들린 글이 한글이 아닌(영문으로 들린) 외국어 줄이 시각을 얻으면 그 영화는 실패,
+    translation_unmatched 를 기록한다. 대본 lang 이 무엇이든(여기서는 ja 로 잘못 붙음) 들린 글자로 정한다."""
+    said = ["Nice weather today."] + SAID[1:]
+    put_film(FILM, speak(said), edit=_relabel("날씨", "ja", "Nice weather today."))
     assert align.run(ARGS) == 0
     assert final.run(ARGS) == 1 and not out().exists()
     (p,) = stage_problems()
     assert (p["level"], p["problem"], p["score"], p["film_id"]) == ("film", "translation_unmatched", 1, FILM_ID)
-    assert "en 1" in p["detail"] and "날씨" not in p["detail"]
+    assert "ja 1" in p["detail"] and "weather" not in p["detail"]
     assert catalog.load()[0]["status"] == "aligned"
-
-    def english_but_cut(s):                                                     # 말하지 않은(absent) 외국어 줄은 괜찮다
-        next(x for x in s["elements"] if x["id"] == E["영화"])["lang"] = "en"
-    put_film(FILM, speak(SAID), edit=english_but_cut)
-    assert align.run(ARGS) == 0 and final.run(ARGS) == 0
-    data = util.read_json(out())
-    assert by_el(data)[E["영화"]]["lang"] == "en" and by_el(data)[E["영화"]]["ko_src"] is None
-    assert stage_problems() == [] and validate.check_file(out()) == ("final", [])
     # 영상 언어가 한국어가 아니면 대본에 없는 말(added)부터 번역이 필요하다
+    put_film(FILM, speak(SAID))
+    assert align.run(ARGS) == 0 and final.run(ARGS) == 0
     put_catalog(video_lang="en", status="aligned")
     assert final.run(ARGS) == 1
     assert stage_problems()[0]["problem"] == "translation_unmatched"

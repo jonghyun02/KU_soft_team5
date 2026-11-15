@@ -596,6 +596,8 @@ def load_timemap(video_sha1: str) -> TimeMap:
     """cache/audio/{video_sha1}.timemap.json 읽기. 없으면 MediaError(먼저 sinkprep video 나 asr 를 돌린다).
 
     wav 가 있으면 길이가 대응표와 같은지 본다(다르면 MediaError: 짝이 아닌 대응표로 시각을 옮기면 틀린다).
+    운영 차례(video·asr)는 이 함수가 아니라 build_timemap 을 부른다(같은 짝 검사 _fits 를 하고, 짝이 아니면 다시 만든다).
+    이 함수는 대응표를 읽기만 하는 시험·조사용이다.
     """
     p = timemap_path(video_sha1)
     if not p.exists():

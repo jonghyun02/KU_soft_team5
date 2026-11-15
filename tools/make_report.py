@@ -456,7 +456,8 @@ C_HOW = {
     "C2": "validate_align: op 의 item 과 final.json 대사 항목이 1:1, 같은 pass 의 같은 낱말을 두 op 이 갖지 않음, added op 에 "
           "asr 범위가 있음, 대사 항목 words = 그 op 의 asr 범위 낱말(timeline.op_words). final 의 film.id = 폴더 이름",
     "C3": "asr.json 스키마(sink.asr/1)에 정렬 칸이 없고 align.json 의 asr_sha1 이 지금 asr.json 과 같음([C1] 로 냄). "
-          "같은 asr.json 으로 다시 맞추면 바이트가 같은지는 tests/test_align.py·test_final.py",
+          "같은 asr.json 에 받아쓰기 캐시(cache/asr 의 rescue 기록: 버릇 글귀)와 LLM 캐시(cache/llm 짝 판정)도 같을 때 다시 "
+          "맞추면 바이트가 같은지는 tests/test_align.py·test_final.py(align 은 asr.json 말고 두 캐시도 입력으로 읽는다)",
 }
 D_HOW = {
     "D1": "인자 없는 validate 가 catalog 에서 영상이 있는 대표 문서마다 films/{film_id}/final.json 이 있는지, 그 film 칸(대표 "
@@ -466,13 +467,15 @@ D_HOW = {
     "D3": "validate_final: absent 는 start=end=null·script_ref 있음, added 는 script_ref=null",
     "D4": "validate_final: changed 는 diffs 있음·same 은 없음, match=text 줄은 textnorm.key(heard)와 key(script_ref.text)가 "
           "same 이면 같고 changed 면 다름",
-    "D5": "validate_final: 시각 있는 대사에 ko 가 있고, lang=ko 면 ko_src=same·ko = heard",
+    "D5": "validate_final: 시각 있는 대사에 ko 가 있고, lang=ko 면 ko_src=same·ko = heard, 시각 있는 대사의 들린 글이 "
+          "영상 언어의 글자면 lang 이 영상 언어(textnorm.spoken_lang)",
     "D6": "validate_final: match=translation 이면 diffs 없음",
     "D7": "validate_final: items 가 시각·id 차례, 시각 없는 항목은 대본 순서로 앞뒤 항목 사이",
     "D8": "validate_final: scene·speakers·script_ref.el·src_el 참조가 있음, script.json 을 찾으면 그 scene·action·dialogue·"
           "onscreen·transition 요소가 한 번씩 나옴",
     "D9": "validate_final: script.json 을 찾았을 때 대본에서 복사한 칸(대사의 speakers·how·lang·paren·sung·overlap·scene·"
-          "script_ref.text, 대사 아닌 항목의 text·scene·kind, 씬·인물 칸)이 대본과 같고 씬 구간이 그 씬 항목 시각과 맞음. "
+          "script_ref.text, 대사 아닌 항목의 text·scene·kind, 씬·인물 칸)이 대본과 같고(시각 있는 대사의 lang 은 "
+          "textnorm.spoken_lang 으로 정한 값) 씬 구간이 그 씬 항목 시각과 맞음. "
           "곧 CBoE 입력 칸이 final.json 만으로 채워짐",
 }
 
@@ -722,7 +725,7 @@ def build(a: argparse.Namespace, ov: dict[str, str]) -> str:
     w("")
     # ---------- 정답 표본
     t_eval = time.time()
-    w("## 5. 파서 정확도(독립 정답 표본)")
+    w("## 5. 파서 정확도(따로 만든 정답 표본)")
     w("규칙 판 = 규칙 파서(sink-parse)만, 지금 판 = docs/*/script.json(llm 단계가 받아들인 문서는 LLM 판). 값은 요소 종류% / 화자%. "
       "hard-test 는 처음 열었을 때(LLM 단계 고치기 전) LLM 창 채점 100/100(120줄 조각 98.9/100)이었고, 그 뒤 hard-test 문서 사례를 보고 "
       "조립을 고쳤으므로 지금 값은 개발용으로 본다.")
@@ -755,7 +758,9 @@ def build(a: argparse.Namespace, ov: dict[str, str]) -> str:
     t_eval = time.time() - t_eval
     gold = [p for p in (ROOT / "tests" / "gold").glob("*.jsonl")]
     gdocs = {util.read_jsonl(p)[0]["doc_id"] for p in gold if util.read_jsonl(p)}
-    w(f"- 정답 표본: 구간 {len(gold)}개, 문서 {len(gdocs)}개, 두 사람 독립 표시 후 갈린 줄만 판정")
+    w(f"- 정답 표본: 구간 {len(gold)}개, 문서 {len(gdocs)}개. Claude 모델(서브에이전트) 둘이 따로 표시하고 갈린 줄은 셋째 "
+      "서브에이전트가 판정한 정답이다(claude-opus-5-5, 사람이 붙인 정답이 아님). 위 정확도는 이 정답에 대한 값이고, LLM 판"
+      "(5b 절의 모델)은 같은 모델이 붙인 정답과 견준 값이다")
     w("")
     # ---------- llm 단계
     from sinkprep import llm, llm_parse

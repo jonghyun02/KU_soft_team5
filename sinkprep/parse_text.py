@@ -439,25 +439,50 @@ HOW_CUES: list[tuple[str, re.Pattern]] = [
     ("narration", re.compile(r"^na$|^n$|^nar$|^narr$|나레이션|내레이션|나래이션|해설|narrat|^voixoff$|^vo\)?$|^v$")),
     ("off", re.compile(r"^e$|^os$|^oc$|^off$|^oov$|소리|목소리|offscreen|offcamera|^hc$|horschamp|^voix|voiceover|^ost?$|^오프$|^off\b")),
 ]
+
+
+def _lang_rx(*names: str, raw: tuple[str, ...] = ()) -> re.Pattern:
+    """언어 이름이 낱말로 서 있을 때만 맞는 정규식. 앞은 글자가 아니고(글 시작·공백·문장부호), 뒤는 토씨·꼬리
+    (로·으로·로만·만·도·을·를·소리·말·말로·대사·자막) 하나가 붙거나 말거나 한 다음 글자가 아니다. 한글 이름은 글자 사이
+    공백을 받는다('한국 어', '러시아 말로': 줄바꿈·OCR 로 갈라진 이름). raw 는 그대로 쓰는 정규식 조각. 이름 자체는 'name' 묶음."""
+    alts = list(raw)
+    for nm in names:
+        if any(is_hangul(c) for c in nm):
+            alts.append(r"\s*".join(map(re.escape, nm)))
+        else:
+            alts.append(nm)                       # 라틴·한자 이름은 정규식 조각 그대로(ingl[ée]s)
+    return re.compile(r"(?<![^\W\d_])(?P<name>" + "|".join(alts) + r")"
+                      r"(?:로만|으로|로|만|도|을|를|소리|말로|말|대사|자막)?(?![^\W\d_])", re.I)
+
+
+# 괄호 지시·화자 꼬리표의 언어 표시(lang_of). 언어 이름이 낱말로 서 있을 때만('(일어)', '(日)', '(영어로)', '(영어소리)',
+# '(en anglais)', '(in broken English)'): '(일어서며)'·'(일어나며)'(동사 일어서다·일어나다), 'Russell'·'FINGERMAN'·
+# 'ENGLISHMAN'(다른 낱말 속 글자) 은 아니다. '일어' 다음에 공백을 건너 서·선·나·난… 이 오면 갈라진 동사('(일어\n서며)').
+# '영문' 은 '(영문 모름)'(까닭) 처럼 언어가 아닌 뜻으로만 나와 이름에서 뺐다. 이름 뒤에 accent 가 오면('(Russian accent)')
+# 그 언어 말투로 하는 말이라 언어 표시가 아니고, latin·thai 는 꼬리표가 그 이름뿐이거나 'in 이름' 일 때만(_WHOLE_ONLY).
 LANG_CUES: list[tuple[str, re.Pattern]] = [
-    ("en", re.compile(r"영어|영문|^英|english|anglais|ingl[ée]s|englisch|^eng$")),
-    ("ja", re.compile(r"^일어|일본어|일본말|^日|japanese|japonais")),
-    ("zh", re.compile(r"중국어|중국말|북경어|광동어|^中|chinese|mandarin|cantonese|chinois")),
-    ("ru", re.compile(r"러시아어|러시아말|노어|russian|russe")),
-    ("de", re.compile(r"독일어|독어|german|allemand|deutsch")),
-    ("fr", re.compile(r"불어|프랑스어|french|fran[çc]ais")),
-    ("es", re.compile(r"스페인어|spanish|espagnol|espa[ñn]ol")),
-    ("it", re.compile(r"이탈리아어|italian|italien")),
-    ("ko", re.compile(r"한국어|한국말|조선말|korean|cor[ée]en")),
-    ("vi", re.compile(r"베트남어|vietnamese")),
-    ("ar", re.compile(r"아랍어|arabic|arabe")),
-    ("pt", re.compile(r"포르투갈어|portuguese|portugais")),
-    ("la", re.compile(r"라틴어|^latin$|inlatin")),
-    ("he", re.compile(r"히브리어|hebrew")),
-    ("mn", re.compile(r"몽골어|mongolian")),
-    ("hi", re.compile(r"힌디어|hindi")),
-    ("th", re.compile(r"태국어|^thai$|inthai")),
+    ("en", _lang_rx("영어", "英語", "英", "english", "anglais", "ingl[ée]s", "englisch", "eng")),
+    ("ja", _lang_rx("일본어", "일본말", "日本語", "日本", "日", "japanese", "japonais",
+                    raw=(r"일\s*어(?!\s*[서선섰설세나난났날남납])",))),
+    ("zh", _lang_rx("중국어", "중국말", "북경어", "광동어", "中國語", "中文", "中", "chinese", "mandarin", "cantonese", "chinois")),
+    ("ru", _lang_rx("러시아어", "러시아말", "노어", "russian", "russe")),
+    ("de", _lang_rx("독일어", "독어", "german", "allemand", "deutsch")),
+    ("fr", _lang_rx("불어", "프랑스어", "french", "fran[çc]ais")),
+    ("es", _lang_rx("스페인어", "spanish", "espagnol", "espa[ñn]ol")),
+    ("it", _lang_rx("이탈리아어", "italian", "italien")),
+    ("ko", _lang_rx("한국어", "한국말", "조선말", "korean", "cor[ée]en")),
+    ("vi", _lang_rx("베트남어", "vietnamese")),
+    ("ar", _lang_rx("아랍어", "arabic", "arabe")),
+    ("pt", _lang_rx("포르투갈어", "portuguese", "portugais")),
+    ("la", _lang_rx("라틴어", "latin")),
+    ("he", _lang_rx("히브리어", "hebrew")),
+    ("mn", _lang_rx("몽골어", "mongolian")),
+    ("hi", _lang_rx("힌디어", "hindi")),
+    ("th", _lang_rx("태국어", "thai")),
 ]
+_RX_LANG_FILL = re.compile(r"(소리|subtitled|speaking|in|en|parle|말로|로)")
+_WHOLE_ONLY = ("latin", "thai")    # 'of the Latin', '"Latin" voice' 처럼 언어가 아닌 뜻이 흔한 이름: 꼬리표가 그 이름뿐이거나 'in 이름'
+_RX_ACCENT = re.compile(r"[\s\W_]*accent", re.I)       # '(Russian accent)': 그 언어 말투로 하는 말(언어 표시 아님)
 RX_CONTD = re.compile(r"^(?:cont['’]?d|cont|continued|continuing|계속|계속해서|이어서|suite|contd)$", re.I)
 RX_SUNG = re.compile(r"노래|노랫|흥얼|콧노래|합창|랩|열창|부른다|부르며|가사|sing|sung|chant|humm|hums|croon|serenad|chorus|"
                      r"chantant|chante|lyrics|[♪♬♩♫]", re.I)
@@ -520,14 +545,20 @@ def how_of(cues: list[str]) -> str | None:
 
 
 def lang_of(cues: list[str]) -> str | None:
+    """괄호 꼬리표·지시들 -> 언어 코드(LANG_CUES 차례로 처음 맞는 것). 짧은 글(꼬리표 열쇠 24자 이하)에서 언어 이름이 낱말로
+    서 있고, 그 이름이 꼬리표 열쇠(군말 소리·in·en·말로·로 를 뺀 것)의 절반 이상일 때만('(영어 선생님에게)' 는 아님)."""
     for c in cues:
         k = cue_key(c)
         if not k or len(k) > 24:
             continue
+        rest = len(_RX_LANG_FILL.sub("", k))
         for lg, rx in LANG_CUES:
-            m = rx.search(k)
-            if m and (m.end() - m.start()) * 2 >= len(re.sub(r"(소리|subtitled|speaking|in|en|parle|말로|로)", "", k)):
-                return lg
+            for m in rx.finditer(c):
+                nm = cue_key(m.group("name"))
+                if _RX_ACCENT.match(c, m.end()) or nm in _WHOLE_ONLY and not (k == nm or "in" + nm in k):
+                    continue
+                if len(nm) * 2 >= rest:
+                    return lg
     return None
 
 

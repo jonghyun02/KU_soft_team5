@@ -1347,7 +1347,9 @@ def _windows(lines: list[Line], spans: dict[int, tuple[float, float]], duration:
 
 
 def prealign(script: dict, asr: dict, video_duration: float | None = None) -> dict:
-    """기준 pass(plain)만으로 한 1차 맞춤. 받아쓰기 단계가 ctx 힌트 창과 rescue 틈 창을 정할 때 부른다.
+    """기준 pass(plain)만으로 한 1차 맞춤. 운영 차례(asr·align·final)에서는 부르지 않는다: 대본 줄마다 있을 시간 창을
+    보는 조사·시험용으로 열어 둔 것이다(rescue 창은 asr.full_windows 가 소리 전체를 덮어 정하고, 대본 힌트(ctx) 받아쓰기는
+    없다).
 
     돌려주는 것::
 

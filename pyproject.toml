@@ -19,6 +19,9 @@ dependencies = [
   "python-docx",
   "rapidocr==3.10.0",
   "xlrd==2.0.1",
+  # convert·hancom_worker(한컴 프로세스 찾기)와 ocr·media(그림·소리 배열)가 직접 쓴다
+  "psutil",
+  "numpy",
 ]
 
 [project.optional-dependencies]
