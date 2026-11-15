@@ -2,6 +2,7 @@
 
 1. 문서마다 글을 읽어 정해지는 칸을 catalog.csv 에 반영한다(catalog.finalize):
    script_lang, is_translation, extract_quality, status, 그리고 영화마다 is_primary 를 다시 고른다.
+   status 가 aligned·done(맞추기·최종본 단계가 올린 값)이면 그대로 두고, 대표 대본은 match 가 있으면 match 가 높은 것부터 본다.
 2. 단계마다 남긴 문제(cache/problems/**)를 모아 qa/needs_review.csv 를 쓴다(심한 것부터).
    영화 ID 가 local_ 인 것(KMDb/TMDB 키 없음)은 '못 읽은 대본'이 아니므로 목록에 넣지 않는다(catalog 의 film_id 로 보임).
 3. llm 단계가 LLM 판(parser sink-parse-llm)을 script.json 으로 쓴 문서는 catalog note 에 'parser:sink-parse-llm' 을 붙이고,
@@ -98,6 +99,14 @@ def _truthy(v) -> bool:
     return str(v).strip().lower() in ("true", "1", "yes")
 
 
+def _match(d: dict) -> float:
+    """catalog match 칸(영상과의 일치율). 비었거나 수가 아니면 -1(맞춰 본 문서보다 뒤)."""
+    try:
+        return float(d.get("match") or -1.0)
+    except ValueError:
+        return -1.0
+
+
 def finalize_catalog(rows: list[dict]) -> dict[str, dict]:
     from . import catalog
 
@@ -123,7 +132,9 @@ def finalize_catalog(rows: list[dict]) -> dict[str, dict]:
             "script_lang": lang,
             "is_translation": is_tr,
             "extract_quality": f"{info['quality']:.3f}",
-            "status": "parsed" if info["has_script"] else "pending",
+            # 맞추기(aligned)·최종본(done) 단계가 올린 상태는 대본이 그대로 있는 한 되돌리지 않는다
+            "status": (d["status"] if d.get("status") in ("aligned", "done") else "parsed")
+            if info["has_script"] else "pending",
             "note": note_with_parser(d.get("note") or "", info["parser"]),
         }
     # 영화마다 대표 대본 다시 고르기
@@ -135,7 +146,8 @@ def finalize_catalog(rows: list[dict]) -> dict[str, dict]:
     def key(d):
         u, i = updates[d["doc_id"]], infos[d["doc_id"]]
         # 두 언어가 한 줄씩 번갈아 섞인 대본(mixed)은 깨끗한 한 언어 판이 있으면 뒤로(fm56461_2 vs fm56461_1)
-        return (i["has_script"], not u["is_translation"], u["script_lang"] != "mixed", round(i["quality"], 1),
+        # 영상과 맞춰 본 문서가 있으면 일치율(match)이 가장 높은 것이 먼저다(영화 1편 = 대본 1개, 명세 Constraints)
+        return (i["has_script"], _match(d), not u["is_translation"], u["script_lang"] != "mixed", round(i["quality"], 1),
                 VERSION_RANK.get(d.get("version_label") or "unknown", 1), i["quality"], i["n_lines"],
                 -int(re.sub(r"\D", "", d["doc_id"]) or 0))
 

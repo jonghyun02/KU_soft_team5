@@ -55,3 +55,51 @@ def test_catalog_unreadable_flag_dropped_when_ocr_exists(tmp_path, monkeypatch):
     rows = [{"doc_id": "fm1", "film_id": "", "status": "parsed", "files_list": ["x/fm1.pdf"]},
             {"doc_id": "fm2", "film_id": "", "status": "parsed", "files_list": ["x/fm2.pdf"]}]
     assert [r["doc_id"] for r in review.collect_problems(rows)] == ["fm2"]
+
+
+def _catalog_with_docs(tmp_path, monkeypatch, rows):
+    """임시 catalog 와 문서(줄 하나, script.json)를 만든다. rows: [(doc_id, film_id, status, match, is_primary)]."""
+    from sinkprep import catalog
+
+    monkeypatch.setattr(paths, "CATALOG", tmp_path / "catalog.csv")
+    monkeypatch.setattr(paths, "DOCS", tmp_path / "docs")
+    out = []
+    for doc_id, film_id, status, match, primary in rows:
+        r = {k: "" for k in catalog.FIELDS}
+        r.update(doc_id=doc_id, post_id=doc_id[2:], category="ko_film", files=f"raw/{doc_id}.hwp", sha1="1" * 40,
+                 real_format="hwp5", title_raw="시험", title_norm="시험", film_id=film_id, film_title="시험",
+                 version_label="unknown", is_primary="true" if primary else "false", status=status, match=match)
+        out.append(r)
+        util.write_jsonl(paths.DOCS / doc_id / "lines.jsonl", [{"schema": "sink.lines/1"}, {"n": 0, "text": "형사가 묻는다.",
+                                                                                           "src": "hwp", "conf": None}])
+        util.write_json(paths.DOCS / doc_id / "script.json", {"parser": {"name": "sink-parse"}, "quality": {"score": 0.9}})
+    catalog.write_catalog(out)
+    return catalog.load()
+
+
+def test_finalize_catalog_keeps_aligned_and_done(tmp_path, monkeypatch):
+    """맞추기·최종본 단계가 올린 status(aligned, done)는 review 가 parsed 로 되돌리지 않는다."""
+    from sinkprep import catalog
+
+    rows = _catalog_with_docs(tmp_path, monkeypatch, [("fm1", "local_0001", "aligned", "0.812", True),
+                                                      ("fm2", "local_0002", "done", "0.700", True),
+                                                      ("fm3", "local_0003", "pending", "", True)])
+    review.finalize_catalog(rows)
+    got = {r["doc_id"]: r for r in catalog.load()}
+    assert [got[d]["status"] for d in ("fm1", "fm2", "fm3")] == ["aligned", "done", "parsed"]
+    assert got["fm1"]["match"] == "0.812" and got["fm1"]["is_primary"] == "true"
+    (paths.DOCS / "fm1" / "script.json").unlink()                    # 대본이 사라지면 pending
+    review.finalize_catalog(catalog.load())
+    assert {r["doc_id"]: r for r in catalog.load()}["fm1"]["status"] == "pending"
+
+
+def test_primary_follows_match_when_docs_were_aligned(tmp_path, monkeypatch):
+    """같은 영화의 문서 가운데 영상과 맞춰 본 것이 있으면 일치율이 가장 높은 문서가 대표다."""
+    from sinkprep import catalog
+
+    rows = _catalog_with_docs(tmp_path, monkeypatch, [("fm1", "local_0001", "aligned", "0.412", True),
+                                                      ("fm2", "local_0001", "aligned", "0.803", False),
+                                                      ("fm3", "local_0001", "parsed", "", False)])
+    review.finalize_catalog(rows)
+    got = {r["doc_id"]: r for r in catalog.load()}
+    assert [got[d]["is_primary"] for d in ("fm1", "fm2", "fm3")] == ["false", "true", "false"]

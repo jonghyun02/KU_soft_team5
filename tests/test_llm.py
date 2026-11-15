@@ -639,22 +639,53 @@ def test_llm_cache_zip_roundtrip(proj, monkeypatch):
     assert r.cached and fake.calls == 1                                       # 되살린 캐시로 부르지 않음
 
 
-def test_pipeline_llm_failure_does_not_stop(monkeypatch):
+ALL_STAGES = ["catalog", "convert", "ocr", "lines", "parse", "llm_parse", "asr", "align", "final", "review", "validate"]
+
+
+def _fake_stages(monkeypatch, behave, cache_only=True):
+    """pipeline 이 부르는 단계 모듈을 가짜로 바꾼다. behave(이름) 이 예외를 던지거나 rc 를 돌려준다. 부른 차례 목록."""
     seen = []
 
     class Mod:
         def __init__(self, name):
             self.name = name
+            if cache_only:
+                self.ALL_CACHE_ONLY = True          # asr: all 안에서 모델을 부르지 않는다고 밝힌 모듈
 
         def run(self, args):
             seen.append(self.name)
-            if self.name == "llm_parse":
-                raise RuntimeError("claude 없음")
-            return 0
+            return behave(self.name)
     import importlib
     monkeypatch.setattr(importlib, "import_module", lambda name: Mod(name.rsplit(".", 1)[-1]))
+    return seen
+
+
+def test_pipeline_llm_failure_does_not_stop(monkeypatch):
+    """llm·asr·align·final 은 예외가 나거나 rc 가 0 이 아니어도 다음 단계로 간다. 단계 순서는 STAGES 그대로."""
+    def behave(name):
+        if name in ("llm_parse", "align"):
+            raise RuntimeError("claude 없음")
+        return 1 if name in ("asr", "final") else 0
+    seen = _fake_stages(monkeypatch, behave)
     assert pipeline.run(None) == 0
-    assert seen[-3:] == ["llm_parse", "review", "validate"]
+    assert seen == ALL_STAGES
+    assert pipeline.STAGES == [s.replace("llm_parse", "llm") for s in ALL_STAGES]
+    assert pipeline.SOFT == {"llm", "asr", "align", "final"}
+
+
+def test_pipeline_stops_at_a_hard_stage_and_returns_validate_rc(monkeypatch):
+    seen = _fake_stages(monkeypatch, lambda name: 3 if name == "parse" else 0)
+    assert pipeline.run(None) == 3 and seen[-1] == "parse"
+    seen = _fake_stages(monkeypatch, lambda name: 1 if name == "validate" else 0)
+    assert pipeline.run(None) == 1 and seen == ALL_STAGES
+
+
+def test_pipeline_all_skips_asr_unless_it_declares_cache_only(monkeypatch, capsys):
+    """all 은 받아쓰기 모델을 부르지 않는다: asr 모듈이 캐시 전용 실행(ALL_CACHE_ONLY)을 밝히지 않으면 건너뛴다."""
+    seen = _fake_stages(monkeypatch, lambda name: 0, cache_only=False)
+    assert pipeline.run(None) == 0
+    assert seen == [s for s in ALL_STAGES if s != "asr"]
+    assert "asr: all 에서는 건너뜀" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------- review

@@ -3,8 +3,22 @@
 명세 `.omc/specs/deep-interview-sink-format.md` 4장. 수락 기준 코드를 오류 앞에 붙인다.
   [schema] 구조·칸·열거값 (JSON Schema)       [E1] schema 칸 없음·모르는 값
   [E2] UTF-8·NFC·BOM                          [B2] 줄 덮기·n 연속   [ref] 인물·씬 참조
-  [C1] asr 낱말 번호·참조   [C2] align↔final 1:1   [D2]~[D8] final 의미 규칙
+  [C1] asr 낱말 번호·참조   [C2] align↔final 1:1, film.id = 폴더 이름   [D2]~[D9] final 의미 규칙
   [T] 시각 소수 셋째 자리   [Q] quality 집계      [A1][A2] catalog   [catalog]/[review] csv
+  [D1] 영상이 있는 영화마다 final.json (인자 없이 돌릴 때)   [B1] 문서마다 lines·script (같음)
+
+final 의미 규칙 가운데 비교가 필요한 것
+  [D2] start < end, 낱말이 줄 안, heard = words, 시각이 영상 길이 안(DURATION_TOL), 줄 안 낱말 시작 시각이 줄지 않음
+  [D4] changed 는 diffs 있음·same 은 없음, 그리고 글자로 맞춘 줄(match=text)은 same 이면 heard 와 script_ref.text 의
+       열쇠(textnorm.key: 공백·문장부호 뺀 글자열)가 같고 changed 면 다름
+  [D8] 참조가 실제로 있음, 그리고 script.json 의 scene·action·dialogue·onscreen·transition 요소가 빠짐없이 한 번씩 나옴
+  [D9] CBoE 가 final.json 만 읽고 쓰는 칸이 믿을 만함: script.json 을 찾았을 때 대본에서 복사한 칸(대사의 speakers·how·
+       lang·paren·sung·overlap·scene·script_ref.text, 대사 아닌 항목의 text·scene·kind, 씬의 number·heading·place·time·
+       flags, 인물의 name·aliases)이 대본과 같고, 씬 구간이 그 씬 항목들의 시각과 어긋나지 않음
+align 의 [C2]
+       같은 pass 의 같은 낱말을 두 op 이 갖지 않음(timeline.shared_words), added op 에 asr 범위가 있음,
+       final·asr 을 함께 볼 때 대사 항목의 words(w, s, e, p)가 그 op 의 asr 범위 낱말과 같음(시각은 timeline.op_words 가
+       바로잡은 값)
 
 함수는 오류 문자열 목록을 돌려준다(빈 목록 = 통과). CLI: python -I -m sinkprep validate [경로 ...]
 """
@@ -22,11 +36,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from . import paths
+from . import paths, textnorm, timeline
 
 MAX_ERRORS = 1000      # 파일 하나에서 모으는 오류 수 상한
 SHOW = 20              # 파일마다 화면에 찍는 오류 수
 EPS = 1e-6
+DURATION_TOL = timeline.DURATION_TOL   # final 의 시각이 영상 길이(film.video.duration)를 넘어도 되는 허용 오차(초, 0.5)
+SHOW_CLAIMS = 20       # 같은 낱말을 두 op 이 가진 곳을 오류로 적는 수(나머지는 수만)
+FINAL_ITEM_TYPES = ("scene", "action", "dialogue", "onscreen", "transition")   # final 에 빠짐없이 나와야 하는 대본 요소 종류
 
 SCHEMA_KINDS = {
     "sink.lines/1": "lines",
@@ -250,6 +267,14 @@ def _ms_ok(v: Any) -> bool:
 def _in_docs(path: Path) -> bool:
     try:
         return Path(path).resolve().parent.parent == paths.DOCS.resolve()
+    except OSError:
+        return False
+
+
+def _in_films(path: Path) -> bool:
+    """films/{film_id}/ 바로 아래 파일인가."""
+    try:
+        return Path(path).resolve().parent.parent == paths.FILMS.resolve()
     except OSError:
         return False
 
@@ -852,24 +877,62 @@ def validate_asr(path) -> list[str]:
 # final.json
 # =====================================================================
 
-def _script_elements(script_path: Path | None, errs: _Errs, who: str) -> tuple[str | None, dict[str, str] | None]:
-    """(script doc_id, {요소 id: type}). 읽을 수 없으면 (None, None)."""
+def _script_elements(script_path: Path | None, errs: _Errs, who: str
+                     ) -> tuple[str | None, dict[str, dict] | None, dict | None]:
+    """(script doc_id, {요소 id: 요소}, script.json 전체). 읽을 수 없으면 (None, None, None)."""
     if script_path is None:
-        return None, None
+        return None, None, None
     try:
         with open(script_path, encoding="utf-8") as f:
             s = json.load(f)
-        els = {e["id"]: e.get("type") for e in s.get("elements", []) if isinstance(e, dict) and "id" in e}
-        return s.get("doc_id"), els
+        els = {e["id"]: e for e in s.get("elements", []) if isinstance(e, dict) and "id" in e}
+        return s.get("doc_id"), els, s
     except (OSError, ValueError, AttributeError, TypeError) as e:
         errs.add(f"[D8] {who}: script.json 을 읽을 수 없음({script_path}): {e}")
-        return None, None
+        return None, None, None
+
+
+def _copied_diffs(it: dict, e: dict) -> list[str]:
+    """final 항목 it 이 대본 요소 e 에서 복사한 칸 가운데 대본과 다른 칸 이름(명세 4.7: CBoE 가 script.json 없이 쓰는 칸)."""
+    bad = []
+    if it.get("scene") != e.get("scene"):
+        bad.append("scene")
+    text = str(e.get("text") or "")
+    if it.get("type") != "dialogue":
+        if it.get("text") != text:
+            bad.append("text")
+        if it.get("kind") != (e.get("kind") or None if it.get("type") == "onscreen" else None):
+            bad.append("kind")
+        return bad
+    ref = it.get("script_ref")
+    if isinstance(ref, dict) and ref.get("text") != text:
+        bad.append("script_ref.text")
+    speakers = list(e.get("speakers") or [])
+    if it.get("speakers") != speakers:
+        bad.append("speakers")
+    if it.get("speaker_from") == "script" and (not speakers or e.get("speaker_inferred")):
+        bad.append("speaker_from")                       # 대본에 적힌 화자가 아닌데(없거나 이어받은 추정) script
+    if it.get("how") != (e.get("how") or "unknown"):
+        bad.append("how")
+    # lang 은 글자로 맞춘 줄만 대본 그대로다(뜻으로 맞춘 줄은 들린 말의 언어)
+    if it.get("match") == "text" and isinstance(e.get("lang"), str) and it.get("lang") != e["lang"]:
+        bad.append("lang")
+    if it.get("paren") != [{"text": p.get("text"), "at": p.get("at")} for p in e.get("paren") or [] if isinstance(p, dict)]:
+        bad.append("paren")
+    if it.get("sung") != bool(e.get("sung")):
+        bad.append("sung")
+    if it.get("overlap") != e.get("overlap"):
+        bad.append("overlap")
+    return bad
 
 
 def validate_final(path, script_path=None) -> list[str]:
-    """final.json: 스키마 + D2~D8 + id 유일·차례 + 시각 셋째 자리 + quality 집계.
+    """final.json: 스키마 + D2~D9 + id 유일·차례 + 시각 셋째 자리 + quality 집계.
 
-    script_path 를 주면 script_ref.el·src_el 이 그 script.json 요소에 있는지(D8)와 종류가 맞는지 본다.
+    script_path 를 주면 script_ref.el·src_el 이 그 script.json 요소에 있는지(D8)와 종류가 맞는지, 그리고
+    scene·action·dialogue·onscreen·transition 요소가 빠짐없이 정확히 한 번씩 items 에 나오는지, 대본에서 복사한 칸이
+    대본과 같은지(D9) 본다. 씬 구간이 그 씬 항목들의 시각과 어긋나지 않는지(D9)는 script 없이도 본다.
+    파일이 films/{film_id}/final.json 자리에 있으면 film.id 가 폴더 이름과 같아야 한다(C2).
     """
     path = Path(path)
     errs = _Errs()
@@ -885,24 +948,42 @@ def validate_final(path, script_path=None) -> list[str]:
 
     film = data.get("film") if isinstance(data.get("film"), dict) else {}
     fscript = film.get("script") if isinstance(film.get("script"), dict) else {}
-    s_doc, s_els = _script_elements(Path(script_path) if script_path else None, errs, "final")
+    s_doc, s_els, s_all = _script_elements(Path(script_path) if script_path else None, errs, "final")
     if s_doc is not None and fscript.get("doc_id") != s_doc:
         errs.add(f"[D8] film.script.doc_id {fscript.get('doc_id')!r} 가 script.json doc_id {s_doc!r} 와 다름")
+    if path.name == "final.json" and _in_films(path) and film.get("id") != path.parent.name:
+        errs.add(f"[C2] film.id {film.get('id')!r} 가 폴더 이름 {path.parent.name!r} 와 다름")
+
+    # D2: 모든 시각은 영상 길이 안(허용 오차 DURATION_TOL)
+    video = film.get("video") if isinstance(film.get("video"), dict) else {}
+    dur = video.get("duration") if _is_num(video.get("duration")) and video["duration"] > 0 else None
+    late: list[str] = []
+
+    def too_late(*ts) -> bool:
+        return dur is not None and any(_is_num(t) and t > dur + DURATION_TOL for t in ts)
 
     for i, sc in enumerate(data.get("scenes") or []):
         if isinstance(sc, dict) and _is_num(sc.get("start")) and _is_num(sc.get("end")) \
                 and sc["start"] > sc["end"] + EPS:
             errs.add(f"[D7] scenes/{i}({sc.get('id')}): start {sc['start']} > end {sc['end']}")
+        if isinstance(sc, dict) and too_late(sc.get("start"), sc.get("end")):
+            late.append(f"scenes/{i}({sc.get('id')})")
 
     prev_id = -1
     prev_t: tuple[float, str] | None = None
     counts = {"dialogue": 0, "same": 0, "changed": 0, "added": 0, "absent": 0}
     bad_t = 0
+    src_count: dict[str, int] = {}
+    scene_t: dict[str, list[float]] = {}          # 씬마다 그 씬 항목들의 [가장 이른 시각, 가장 늦은 시각]
     for idx, it in enumerate(items):
         if not isinstance(it, dict):
             continue
         iid = it.get("id")
         w = f"items/{idx}({iid})"
+        if isinstance(it.get("scene"), str) and _is_num(it.get("start")):
+            ts = [t for t in (it.get("start"), it.get("end")) if _is_num(t)]
+            span = scene_t.setdefault(it["scene"], [min(ts), max(ts)])
+            span[0], span[1] = min(span[0], min(ts)), max(span[1], max(ts))
         if isinstance(iid, str) and RE_ITEM_ID.match(iid):
             num = int(iid[1:])
             if num <= prev_id:
@@ -912,6 +993,8 @@ def validate_final(path, script_path=None) -> list[str]:
         st, en = it.get("start"), it.get("end")
         if not (_ms_ok(st) and _ms_ok(en)):
             bad_t += 1
+        if too_late(st, en):
+            late.append(w)
         # D7: 시각 있는 항목끼리 start 비감소. 시각 없는 항목은 어디든 끼어 있어도 됨.
         if _is_num(st):
             if prev_t is not None and st < prev_t[0] - EPS:
@@ -924,11 +1007,17 @@ def validate_final(path, script_path=None) -> list[str]:
         if isinstance(sc, str) and sc not in scenes:
             errs.add(f"[D8] {w}: scene {sc!r} 가 scenes 에 없음")
         src_el = it.get("src_el")
+        if isinstance(src_el, str):
+            src_count[src_el] = src_count.get(src_el, 0) + 1
         if s_els is not None and isinstance(src_el, str):
             if src_el not in s_els:
                 errs.add(f"[D8] {w}: src_el {src_el!r} 가 script.json 요소에 없음")
-            elif typ is not None and s_els[src_el] != typ:
-                errs.add(f"[D8] {w}: 항목 종류 {typ!r} 와 src_el {src_el} 의 종류 {s_els[src_el]!r} 가 다름")
+            elif typ is not None and s_els[src_el].get("type") != typ:
+                errs.add(f"[D8] {w}: 항목 종류 {typ!r} 와 src_el {src_el} 의 종류 {s_els[src_el].get('type')!r} 가 다름")
+            else:                                  # D9: 대본에서 복사한 칸(글은 적지 않고 칸 이름만 알린다)
+                bad = _copied_diffs(it, s_els[src_el])
+                if bad:
+                    errs.add(f"[D9] {w}: 대본 요소 {src_el} 에서 복사한 칸이 대본과 다름: {', '.join(bad)}")
         if typ != "dialogue":
             continue
 
@@ -959,7 +1048,9 @@ def validate_final(path, script_path=None) -> list[str]:
                 errs.add(f"[D2] {w}: start {st} < end {en} 이 아님")
             if not words:
                 errs.add(f"[D2] {w}: status={status} 인데 words 가 비어 있음")
-            out = 0
+            out = back = 0
+            prev_s = None
+            late_word = False
             for wd in words:
                 if not isinstance(wd, dict):
                     continue
@@ -970,8 +1061,16 @@ def validate_final(path, script_path=None) -> list[str]:
                     continue
                 if s > e + EPS or (_is_num(st) and s < st - EPS) or (_is_num(en) and e > en + EPS):
                     out += 1
+                if prev_s is not None and s < prev_s - EPS:
+                    back += 1
+                prev_s = s
+                late_word = late_word or too_late(s, e)
             if out:
                 errs.add(f"[D2] {w}: 낱말 {out}개의 시각이 [start {st}, end {en}] 밖이거나 s>e")
+            if back:
+                errs.add(f"[D2] {w}: 낱말 시작 시각이 앞 낱말보다 앞선 곳 {back}군데(낱말은 시각 차례여야 함)")
+            if late_word and not too_late(st, en):
+                late.append(w)
             if isinstance(heard, str) and words:
                 joined = "".join(wd.get("w", "") for wd in words if isinstance(wd, dict) and isinstance(wd.get("w"), str))
                 if RE_SPACE.sub("", joined) != RE_SPACE.sub("", heard):
@@ -991,6 +1090,15 @@ def validate_final(path, script_path=None) -> list[str]:
             errs.add(f"[D4] {w}: status=changed 인데 diffs 가 비어 있음")
         if status in ("same", "added", "absent") and diffs:
             errs.add(f"[D4] {w}: status={status} 인데 diffs 가 {len(diffs)}개 있음")
+        # D4: 글자로 맞춘 줄은 same 이면 열쇠(공백·문장부호 뺀 글자열)가 같고 changed 면 다르다
+        if status in ("same", "changed") and it.get("match") == "text" and isinstance(heard, str) \
+                and isinstance(ref, dict) and isinstance(ref.get("text"), str):
+            alike = textnorm.key(heard) == textnorm.key(ref["text"])
+            if status == "same" and not alike:
+                errs.add(f"[D4] {w}: status=same 인데 heard 와 script_ref.text 가 띄어쓰기·문장부호를 빼도 다름 "
+                         f"({_short(heard, 40)!r} / {_short(ref['text'], 40)!r})")
+            elif status == "changed" and alike:
+                errs.add(f"[D4] {w}: status=changed 인데 heard 와 script_ref.text 가 띄어쓰기·문장부호만 다름")
         # D5
         if _is_num(st) and not (isinstance(ko, str) and ko.strip()):
             errs.add(f"[D5] {w}: 시각 있는 대사인데 ko 가 없음")
@@ -1011,7 +1119,58 @@ def validate_final(path, script_path=None) -> list[str]:
             errs.add(f"[D6] {w}: match=translation 인데 diffs 가 {len(diffs)}개 있음")
     if bad_t:
         errs.add(f"[T] 소수 셋째 자리를 넘는 시각 {bad_t}개")
+    if late:
+        errs.add(f"[D2] 영상 길이 {dur}초를 {DURATION_TOL}초 넘게 지난 시각이 {len(late)}곳: {', '.join(late[:5])}"
+                 f"{' …' if len(late) > 5 else ''}")
     _check_untimed_order(items, errs)
+
+    # D8: 대본 요소는 빠짐없이 정확히 한 번씩
+    def el_order(k: str) -> tuple[int, str]:
+        return len(k), k
+
+    twice = sorted((k for k, c in src_count.items() if c > 1), key=el_order)
+    if twice:
+        errs.add(f"[D8] 같은 대본 요소를 가리키는 항목이 둘 이상인 요소 {len(twice)}개: {', '.join(twice[:10])}")
+    if s_els is not None:
+        miss = sorted((k for k, e in s_els.items() if e.get("type") in FINAL_ITEM_TYPES and k not in src_count),
+                      key=el_order)
+        if miss:
+            errs.add(f"[D8] items 에 없는 대본 요소 {len(miss)}개(scene·action·dialogue·onscreen·transition 요소는 "
+                     f"빠짐없이 한 번씩): {', '.join(miss[:10])}")
+
+    # D9: 씬 구간은 그 씬 항목들의 시각과 어긋나지 않는다(구간의 start 가 그 씬 항목들의 시각 범위 안. 시각 있는 항목이
+    # 있는 씬은 구간이 있고, 없는 씬은 구간이 없다). end 는 start 이상이기만 하면 된다(다음 씬 시작까지로 잡을 수도 있다).
+    for i, sc in enumerate(data.get("scenes") or []):
+        if not isinstance(sc, dict) or not isinstance(sc.get("id"), str):
+            continue
+        span = scene_t.get(sc["id"])
+        st = sc.get("start")
+        if span is None and _is_num(st):
+            errs.add(f"[D9] scenes/{i}({sc['id']}): 시각 있는 항목이 없는 씬인데 구간이 있음(start {st})")
+        elif span is not None and not _is_num(st):
+            errs.add(f"[D9] scenes/{i}({sc['id']}): 시각 있는 항목이 있는 씬인데 구간이 없음")
+        elif span is not None and not (span[0] - EPS <= st <= span[1] + EPS):
+            errs.add(f"[D9] scenes/{i}({sc['id']}): 구간 start {st} 가 그 씬 항목들의 시각 범위 "
+                     f"[{span[0]}, {span[1]}] 밖")
+    # D9: 대본에서 복사한 씬·인물 칸
+    if s_all is not None:
+        def copied(k: str, e: dict):
+            if k in ("flags", "aliases"):
+                return list(e.get(k) or [])
+            return (e.get(k) or "") if k == "heading" else e.get(k)
+
+        for what, keys in (("scenes", ("number", "heading", "place", "time", "flags")), ("people", ("name", "aliases"))):
+            src = {x["id"]: x for x in s_all.get(what) or [] if isinstance(x, dict) and "id" in x}
+            for i, x in enumerate(data.get(what) or []):
+                if not isinstance(x, dict):
+                    continue
+                e = src.get(x.get("id"))
+                if e is None:
+                    errs.add(f"[D9] {what}/{i}({x.get('id')}): script.json 의 {what} 에 없음")
+                    continue
+                bad = [k for k in keys if x.get(k) != copied(k, e)]
+                if bad:
+                    errs.add(f"[D9] {what}/{i}({x.get('id')}): 대본에서 복사한 칸이 대본과 다름: {', '.join(bad)}")
 
     q = data.get("quality")
     if isinstance(q, dict):
@@ -1059,9 +1218,34 @@ def _asr_index(asr_path: Path, errs: _Errs) -> tuple[str | None, dict[str, int] 
         return None, None, None
 
 
+def _asr_words(asr_path: Path) -> dict[str, list[dict]] | None:
+    """{pass id: 낱말 목록(번호 i 순)} (timeline.asr_index). 읽을 수 없거나 꼴이 깨졌으면 None(다른 검사가 알린다)."""
+    try:
+        with open(asr_path, encoding="utf-8") as f:
+            index = timeline.asr_index(json.load(f))
+        for ws in index.values():
+            for k, w in enumerate(ws):
+                if w["i"] != k or not (_is_num(w["s"]) and _is_num(w["e"])):
+                    return None
+        return index
+    except (OSError, ValueError, AttributeError, TypeError, KeyError):
+        return None
+
+
+def _word_key(w: Any) -> tuple:
+    return (w.get("w"), w.get("s"), w.get("e"), w.get("p")) if isinstance(w, dict) else (None,) * 4
+
+
 def validate_align(path, final_path=None, asr_path=None, script_path=None) -> list[str]:
     """align.json: 스키마 + op 1개 = final 대사 1줄(C2: item 1:1, op==status, script_el==script_ref.el, match 같음)
-    + asr 낱말 참조가 asr.json 에 있음(C1) + asr_sha1 이 asr.json 파일 sha1 + script_el 이 script.json 에 있음."""
+    + asr 낱말 참조가 asr.json 에 있음(C1) + asr_sha1 이 asr.json 파일 sha1 + script_el 이 script.json 에 있음.
+
+    같은 pass 의 같은 낱말을 두 op 이 갖지 않는지도 본다(C2, timeline.shared_words: 한 번 난 소리는 한 줄에만).
+    서로 다른 pass 에서 온 줄끼리 시간이 겹친 곳은 시각만으로 잘못이라 단정할 수 없어 오류로 보지 않는다(final 이
+    quality.pass_overlaps 와 항목 수준 문제로 남긴다). final.json 과 asr.json 을 함께 주면 대사 항목의 words(w, s, e, p)가
+    그 op 의 asr 범위 낱말과 같은지 본다(C2). 견주는 값은 timeline.op_words 가 영상 길이(film.video.duration)를 받아
+    시각을 바로잡은 낱말이다: final 이 낱말을 만드는 바로 그 함수라서, item 이나 asr 범위가 어긋난 사본과 받아쓰기가
+    바뀐 뒤의 낡은 final.json 이 걸린다."""
     path = Path(path)
     errs = _Errs()
     data = _load_json(path, errs)
@@ -1075,14 +1259,16 @@ def validate_align(path, final_path=None, asr_path=None, script_path=None) -> li
             _schema_errors(v_op, op, errs, base=("ops", i))
 
     a_sha, a_idx, a_video = _asr_index(Path(asr_path), errs) if asr_path else (None, None, None)
+    a_words = _asr_words(Path(asr_path)) if a_idx is not None else None
     if a_sha is not None and data.get("asr_sha1") != a_sha:
         errs.add(f"[C1] asr_sha1 {data.get('asr_sha1')!r} 가 asr.json 파일 sha1 {a_sha} 와 다름")
-    s_doc, s_els = _script_elements(Path(script_path) if script_path else None, errs, "align")
+    s_doc, s_els, _ = _script_elements(Path(script_path) if script_path else None, errs, "align")
     if s_doc is not None and data.get("script_doc") != s_doc:
         errs.add(f"[D8] script_doc {data.get('script_doc')!r} 가 script.json doc_id {s_doc!r} 와 다름")
 
     fitems: dict[str, dict] | None = None
     fscenes: set[str] | None = None
+    f_dur: float | None = None
     if final_path:
         try:
             with open(final_path, encoding="utf-8") as f:
@@ -1092,14 +1278,18 @@ def validate_align(path, final_path=None, asr_path=None, script_path=None) -> li
             fdoc = (fin.get("film") or {}).get("script", {}).get("doc_id")
             if fdoc is not None and data.get("script_doc") != fdoc:
                 errs.add(f"[C2] script_doc {data.get('script_doc')!r} 가 final film.script.doc_id {fdoc!r} 와 다름")
-            fvid = ((fin.get("film") or {}).get("video") or {}).get("sha1")
+            fvideo = (fin.get("film") or {}).get("video") or {}
+            fvid = fvideo.get("sha1")
             if a_video is not None and fvid is not None and a_video != fvid:
                 errs.add(f"[C2] asr.json video_sha1 {a_video} 가 final film.video.sha1 {fvid} 와 다름(다른 영상)")
+            if _is_num(fvideo.get("duration")) and fvideo["duration"] > 0:
+                f_dur = float(fvideo["duration"])
         except (OSError, ValueError, AttributeError, TypeError, KeyError) as e:
             errs.add(f"[C2] final.json 을 읽을 수 없음({final_path}): {e}")
             fitems = None
 
     seen: dict[str, int] = {}
+    sound: list[dict] = []                         # 낱말 참조가 멀쩡한 op (한 소리를 두 op 이 가졌는지 볼 대상)
     for i, op in enumerate(ops):
         if not isinstance(op, dict):
             continue
@@ -1114,10 +1304,14 @@ def validate_align(path, final_path=None, asr_path=None, script_path=None) -> li
         if type(ch) is int and (not isinstance(cands, list) or ch >= len(cands)):
             errs.add(f"[schema] {w}: chosen={ch} 가 candidates 범위 밖")
         rng = op.get("asr")
+        rng_ok = False
+        if rng is None and op.get("op") == "added":
+            errs.add(f"[C2] {w}: op=added 인데 asr 낱말 범위가 없음(대본에 없는 말은 들린 낱말이 있어야 함)")
         if isinstance(rng, list) and len(rng) == 2 and all(isinstance(x, str) for x in rng):
             m = [RE_ASR_REF.match(x) for x in rng]
             if all(m):
                 (p0, i0), (p1, i1) = [(x.group(1), int(x.group(2))) for x in m]
+                rng_ok = p0 == p1 and i0 <= i1
                 if p0 != p1:
                     errs.add(f"[C1] {w}: asr 범위의 처음·끝 pass 가 다름 ({rng[0]}, {rng[1]})")
                 elif i0 > i1:
@@ -1126,8 +1320,22 @@ def validate_align(path, final_path=None, asr_path=None, script_path=None) -> li
                     for pid, k, ref in ((p0, i0, rng[0]), (p1, i1, rng[1])):
                         if pid not in a_idx:
                             errs.add(f"[C1] {w}: asr {ref!r} 의 pass {pid!r} 가 asr.json 에 없음")
+                            rng_ok = False
                         elif k >= a_idx[pid]:
                             errs.add(f"[C1] {w}: asr {ref!r} 의 낱말 번호가 asr.json 범위(0..{a_idx[pid] - 1}) 밖")
+                            rng_ok = False
+        if rng_ok:
+            sound.append(op)
+        if rng_ok and a_words is not None:
+            it = fitems.get(item) if fitems is not None and isinstance(item, str) else None
+            if isinstance(it, dict) and it.get("type") == "dialogue":
+                # C2: final 의 낱말은 이 op 의 asr 범위 낱말 그대로다(시각만 timeline 이 바로잡은 값)
+                want = [_word_key(x) for x in timeline.op_words(a_words, op, f_dur)]
+                got = [_word_key(x) for x in it.get("words") or []] if isinstance(it.get("words"), list) else []
+                if got != want:
+                    at = next((k for k, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
+                    errs.add(f"[C2] {w}: final 항목의 words 가 asr 범위 {rng[0]}~{rng[1]} 의 낱말과 다름"
+                             f"(final {len(got)}개, asr {len(want)}개, 처음 다른 곳 {at}번째)")
         sel = op.get("script_el")
         if s_els is not None and isinstance(sel, str) and sel not in s_els:
             errs.add(f"[D8] {w}: script_el {sel!r} 가 script.json 요소에 없음")
@@ -1146,6 +1354,11 @@ def validate_align(path, final_path=None, asr_path=None, script_path=None) -> li
                     errs.add(f"[C2] {w}: script_el {sel!r} 가 final script_ref.el {fel!r} 와 다름")
                 if op.get("match") != it.get("match"):
                     errs.add(f"[C2] {w}: match {op.get('match')!r} 가 final match {it.get('match')!r} 와 다름")
+    claims = timeline.shared_words(sound)
+    for c in claims[:SHOW_CLAIMS]:
+        errs.add(f"[C2] {c}")
+    if len(claims) > SHOW_CLAIMS:
+        errs.add(f"[C2] 같은 낱말을 두 op 이 가진 곳이 {len(claims) - SHOW_CLAIMS}곳 더 있음")
     if fitems is not None:
         miss = [k for k, it in fitems.items() if it.get("type") == "dialogue" and k not in seen]
         if miss:
@@ -1546,8 +1759,54 @@ def _coverage_errors(doc_ids: list[str]) -> list[str]:
     return errs
 
 
-def _collect(args) -> tuple[list[Path], list[str]]:
-    """검사할 파일 목록과 B1 덮기 오류."""
+def _film_coverage_errors() -> list[str]:
+    """D1: catalog 에서 영상이 있고(video_path) 대표 대본인(is_primary=true) 영화마다 films/{film_id}/final.json 이 있는지.
+    있으면 catalog 행과 같은 대본·같은 영상의 것인지(대표 문서, 영상 sha1, 영상 길이, 일치율)도 본다."""
+    errs: list[str] = []
+    if not paths.CATALOG.is_file():
+        return errs
+    try:
+        with open(paths.CATALOG, encoding="utf-8-sig", newline="") as f:
+            rows = [d for d in csv.DictReader(f)
+                    if d.get("status") != "excluded" and d.get("video_path") and d.get("is_primary") == "true"
+                    and d.get("film_id")]
+    except (OSError, csv.Error, UnicodeDecodeError) as e:
+        return [f"[D1] catalog.csv 를 읽을 수 없음: {e}"]
+
+    def num(v) -> float | None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    for d in sorted(rows, key=lambda d: d["film_id"]):
+        fid, did = d["film_id"], d.get("doc_id")
+        p = paths.FILMS / fid / "final.json"
+        if not p.is_file():
+            errs.append(f"[D1] {fid}: films/{fid}/final.json 이 없음(영상이 있는 영화, 대표 문서 {did})")
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                film = json.load(f).get("film") or {}
+            fscript, fvideo = film.get("script") or {}, film.get("video") or {}
+        except (OSError, ValueError, AttributeError):
+            continue                       # 읽을 수 없는 파일은 그 파일의 검사가 알린다
+        if fscript.get("doc_id") != did:
+            errs.append(f"[D1] {fid}: final 의 film.script.doc_id {fscript.get('doc_id')!r} 가 catalog 의 대표 문서 "
+                        f"{did!r} 와 다름")
+        if d.get("video_sha1") and fvideo.get("sha1") != d["video_sha1"]:
+            errs.append(f"[D1] {fid}: final 의 film.video.sha1 이 catalog 의 video_sha1 과 다름")
+        c_dur, f_dur = num(d.get("video_duration")), num(fvideo.get("duration"))
+        if c_dur is not None and f_dur is not None and abs(c_dur - f_dur) > 0.0015:
+            errs.append(f"[D1] {fid}: final 의 film.video.duration {f_dur} 가 catalog 의 video_duration {c_dur} 와 다름")
+        c_m, f_m = num(d.get("match")), num(fscript.get("match"))
+        if f_m is not None and (c_m is None or abs(c_m - f_m) > 0.0005):
+            errs.append(f"[D1] {fid}: final 의 film.script.match {f_m} 가 catalog 의 match {d.get('match')!r} 와 다름")
+    return errs
+
+
+def _collect(args) -> tuple[list[Path], list[tuple[str, list[str]]]]:
+    """검사할 파일 목록과 덮기 오류 [(이름, 오류 목록)]: B1(문서마다 lines·script), D1(영상 있는 영화마다 final)."""
     given = list(getattr(args, "paths", None) or [])
     docs_filter = getattr(args, "docs", None)
     limit = getattr(args, "limit", None)
@@ -1585,8 +1844,10 @@ def _collect(args) -> tuple[list[Path], list[str]]:
                     out.extend(sorted((fd / "work").glob("*.json")))
         if paths.EXAMPLES.is_dir():
             out.extend(_walk(paths.EXAMPLES))
-    cover = _coverage_errors(all_ids) if (wanted is None and not limit) else []
-    return out, cover
+    cover: list[tuple[str, list[str]]] = []
+    if wanted is None and not limit:
+        cover = [("docs (B1 덮기)", _coverage_errors(all_ids)), ("films (D1 덮기)", _film_coverage_errors())]
+    return out, [(name, errs) for name, errs in cover if errs]
 
 
 def run(args) -> int:
@@ -1602,8 +1863,8 @@ def run(args) -> int:
             results = list(ex.map(_check_file_worker, jobs, chunksize=max(1, len(jobs) // (workers * 8))))
     else:
         results = [_check_file_worker(j) for j in jobs]
-    if cover:
-        results.append(("docs (B1 덮기)", "coverage", cover))
+    for name, errs in cover:
+        results.append((name, "coverage", errs))
 
     def rel(s: str) -> str:
         try:
