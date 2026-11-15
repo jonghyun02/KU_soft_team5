@@ -27,7 +27,9 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest"]
 # 영상 받아쓰기(sinkprep asr). 결과가 버전에 달려 있어 고정한다. ffmpeg·ffprobe 는 PATH 에 따로 있어야 한다.
-asr = ["faster-whisper==1.2.1", "numpy", "psutil"]
+# ctranslate2 판은 받아쓰기 묶음 캐시 열쇠와 asr.json 의 모델 문자열에 들어간다: 고정하지 않으면 새로 깐 곳에서
+# 다른 판(2026-11-15 기준 4.9.0)이 들어와 같은 영상도 처음부터 다시 받아쓰고 결과 바이트가 달라진다.
+asr = ["faster-whisper==1.2.1", "ctranslate2==4.8.3", "numpy", "psutil"]
 # 받아쓰기를 GPU(cuda)로 돌릴 때 필요한 cuBLAS·cuDNN DLL. asr.py 가 site-packages/nvidia/*/bin 을 DLL 경로에 더한다.
 asr-gpu = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9,<10"]
 

@@ -1,6 +1,6 @@
 # sink 결과 보고: 대본 형식 통일 전처리와 영상 맞추기
 
-만든 시각: 2026-11-15 21:17 · 생성기 `tools/make_report.py`(모든 숫자는 디스크 결과물에서 다시 셈)
+만든 시각: 2026-11-15 22:19 · 생성기 `tools/make_report.py`(모든 숫자는 디스크 결과물에서 다시 셈)
 
 ## 1. 원본과 카탈로그
 - 원본 파일 701개(manifest 제외) + 압축에서 나온 파일 13개 = 714개
@@ -51,7 +51,7 @@
   - dialogue_ratio: 10% 0.36 · 중앙값 0.56 · 90% 0.74
   - unknown_ratio: 10% 0.00 · 중앙값 0.00 · 90% 0.00
 
-## 5. 파서 정확도(독립 정답 표본)
+## 5. 파서 정확도(따로 만든 정답 표본)
 규칙 판 = 규칙 파서(sink-parse)만, 지금 판 = docs/*/script.json(llm 단계가 받아들인 문서는 LLM 판). 값은 요소 종류% / 화자%. hard-test 는 처음 열었을 때(LLM 단계 고치기 전) LLM 창 채점 100/100(120줄 조각 98.9/100)이었고, 그 뒤 hard-test 문서 사례를 보고 조립을 고쳤으므로 지금 값은 개발용으로 본다.
 
 - 개발용(dev): 줄 610개(대사 줄 330개), 규칙 판 98.4 / 97.6, 지금 판 98.4 / 97.6
@@ -59,24 +59,25 @@
 - dev+test+hard-dev: 줄 970개(대사 줄 537개), 규칙 판 94.1 / 92.0, 지금 판 98.7 / 98.1
 - 어려운 꼴 개발용(hard-dev): 줄 180개(대사 줄 89개), 규칙 판 75.6 / 62.9, 지금 판 100.0 / 100.0
 - 어려운 꼴 확인용(hard-test): 줄 180개(대사 줄 118개), 규칙 판 81.7 / 75.4, 지금 판 100.0 / 100.0
-- 정답 표본: 구간 26개, 문서 22개. Claude 모델(서브에이전트) 둘이 따로 표시하고 갈린 줄만 판정한 정답이다(사람이 붙인 정답이 아님). 위 정확도는 이 정답에 대한 값
+- 정답 표본: 구간 26개, 문서 22개. Claude 모델(서브에이전트) 둘이 따로 표시하고 갈린 줄은 셋째 서브에이전트가 판정한 정답이다(claude-opus-5-5, 사람이 붙인 정답이 아님). 위 정확도는 이 정답에 대한 값이고, LLM 판(5b 절의 모델)은 같은 모델이 붙인 정답과 견준 값이다
 
 ## 5b. LLM 파싱 단계(llm)
 - 모델 claude-opus-5-5(effort medium), 프롬프트 lp1, 조립 0.2.2. 다룬 문서 37개: LLM 판 사용 29, 규칙 판 유지 8
 - docs 의 파서: sink-parse 655, sink-parse-llm 29
-- claude 응답 캐시 869개(cache/llm). 같은 입력은 다시 부르지 않아 다시 돌려도 바이트 단위로 같다. `sinkprep all` 은 캐시만 쓴다.
+- claude 응답 캐시 879개(cache/llm). 같은 입력은 다시 부르지 않아 다시 돌려도 바이트 단위로 같다. `sinkprep all` 은 캐시만 쓴다.
 
 ## 6. 확인 필요 목록(qa/needs_review.csv)
-- 49건(문서 23개): asr_low_conf 27, other 9, parse_low_dialogue 7, speaker_missing 4, extract_broken 2
-- 수준별: item 27, doc 22
+- 80건(문서 24개): asr_low_conf 57, other 10, parse_low_dialogue 7, speaker_missing 4, extract_broken 2
+- 수준별: item 57, doc 22, film 1
 
 ## 6b. 영상 쪽(영화별: 영상 등록·받아쓰기·맞추기·최종본)
 
-catalog 에서 영상이 있는 영화 1편. 결과물은 `films/{film_id}/` (work/asr.json, work/align.json, final.json). 파일이 없으면 '없음'.
+catalog 에서 영상이 있는 영화 2편. 결과물은 `films/{film_id}/` (work/asr.json, work/align.json, final.json). 파일이 없으면 '없음'.
 
 | 영화 | 대표 문서 | 영상 길이(초) | 받아쓰기 낱말(pass) | 일치율 | 최종본 항목 | final.json 검사 |
 |---|---|---|---|---|---|---|
 | local_0270 | fm55664 | 7548.093 | plain 4,012, lv3 4,104, rescue 270 | 0.613 | 2,096 | 검사 통과 |
+| local_0556 | fm847721 | 7449.455 | plain 4,789, lv3 4,833, rescue 593 | 0.565 | 1,935 | 검사 통과 |
 
 ### local_0270 (대표 문서 fm55664, catalog status done, match 0.613)
 
@@ -104,9 +105,35 @@ catalog 에서 영상이 있는 영화 1편. 결과물은 `films/{film_id}/` (wo
 - 확인 필요(`qa/needs_review.csv`): film 수준 0건(없음), item 수준 27건(asr_low_conf 27)
   - 단계 문제 기록(`cache/problems/{asr,align,final}/local_0270.json`, review 가 위 목록으로 모음): asr 없음, align item 27, final item 27
 
+### local_0556 (대표 문서 fm847721, catalog status done, match 0.565)
+
+- 영상: `videos/local_0556.mkv`, 길이 7449.455초, 언어 ko, sha1 9ceae954c42f…. 시각 대응표(`cache/audio/9ceae954c42f03f0ceda06331e4f711402532509.timemap.json`): mode padded, 틈 0곳 합 0초, 소리 7449.355초 → 영상 7449.355초, sinkprep.media 0.2.0
+- 받아쓰기(`films/local_0556/work/asr.json`, 언어 ko): 말 구간 1,244개 합 2,652.5초, 묶음 545개, pass 3개, 검사 통과
+  - `plain`: 낱말 4,789개, 평균 확률 0.807, context -, 모델 mobiuslabsgmbh/faster-whisper-large-v3-turbo@0a363e91 · ct2 4.8.3 cuda float16 · sinkprep.asr 0.3.0 decode1
+  - `lv3`: 낱말 4,833개, 평균 확률 0.817, context -, 모델 Systran/faster-whisper-large-v3@edaa852e · ct2 4.8.3 cuda float16 · sinkprep.asr 0.3.0 decode1
+  - `rescue`: 낱말 593개, 평균 확률 0.744, context full_window_stable, 모델 mobiuslabsgmbh/faster-whisper-large-v3-turbo@0a363e91 · ct2 4.8.3 cuda float16 · sinkprep.asr 0.3.0 decode1 · rescue: full windows x2 win25 quiet5 staggered novad | outside plain chunks, not plain words dup0.5 same+gap0.1 | frag seg+gap0.6 | sim0.6 margin1 coloc0.5 otherstart rapidfuzz-ratio nfc-alnum | loop>4 habit7x3
+  - rescue 통계: asr.json 에는 rescue pass 의 낱말만 있고 조각 수·버린 수 같은 통계 칸은 없음(asr 단계 출력에만)
+- 맞추기(`films/local_0556/work/align.json`, sinkprep.align 0.4.0, 기준 pass plain): 대사 1,461 = 말 있는 대본 대사 770 + 말 없는 대사 51 + added 640; same 158, changed 391, absent 272(말 있는 대사 가운데 221), 일치율 0.565, 낱말 평균 확률 0.806, 검사 통과
+  - 말 있는 대본 대사 가운데 받아쓰기와 짝지은 줄(same+changed) 549/770(71.3%)
+  - pass 별(method.passes): `plain` role base, matched_lines 464, chosen_lines 361, added_lines 489, backsteps 0; `lv3` role alt, matched_lines 474, chosen_lines 134, added_lines 0, backsteps 0; `rescue` role rescue, matched_lines 43, chosen_lines 54, added_lines 151, backsteps 0
+  - 고른 줄의 받아쓰기 pass(ops 의 asr 범위): plain 850, rescue 205, lv3 134; decided_by: rule 1,430, llm 31
+  - pass 고르기(method.decide, 0 아닌 값): base_same 112, base_only 5, base_kept 224, alt_same 23, alt_closer 92, alt_jamo 4, alt_unmasked 1, alt_elsewhere 1, alt_clash 3, alt_only 14, alt_only_rejected 2, across_slot 8
+  - 다시 짝지은 줄: decide.across_slot 8
+  - 시각 보정(method.time_fix): 줄 2, 낱말 2, 믿기 어려운 줄 0개
+  - 씬 구간(align scenes how): anchors 57, none 34, lines 3
+- 최종본(`films/local_0556/final.json`, sinkprep.final 0.3.0): 항목 1,935개(dialogue 1,461, action 380, scene 94), 검사 통과
+  - quality: dialogue 1,461, same 158, changed 391, added 640, absent 272, speaker_unknown 640, mean_word_p 0.806, spoken 770, silent_turns 51, absent_spoken 221, line_coverage 0.713, match 0.565, speaker_inferred 0, mean_conf 0.705, low_conf 30, moved 1, words 5,350, by_pass {lv3 134, plain 850, rescue 205}, diff_kinds {filler 45, number 11, repeat 3, spelling 46, word 951}, time_fixed 2, time_fixed_words 2, time_suspect 0개, pass_overlaps 0개, lang_from_heard 0
+  - 대사 status: added 640, changed 391, absent 272, same 158; 항목 timing: aligned 1,189, estimated 474, none 272
+  - 씬 94개, 구간(start)이 있는 씬 94개
+  - 화자 있는 대사(speakers 가 빈 목록이 아님): 대본 대사 821/821(100.0%), added 포함 821/1,461(56.2%); speaker_from script 821, unknown 640
+  - 시각 보정: time_fixed 2줄(낱말 2), time_suspect 0개, pass_overlaps 0개
+  - film.script.match 0.565, catalog match 0.565
+- 확인 필요(`qa/needs_review.csv`): film 수준 1건(other 1), item 수준 30건(asr_low_conf 30)
+  - 단계 문제 기록(`cache/problems/{asr,align,final}/local_0556.json`, review 가 위 목록으로 모음): asr film 1, align item 30, final item 30
+
 ## 7. 수락 기준 확인(A1~A3, B1~B5, C1~C3, D1~D9, E1~E2)
 
-검사는 `sinkprep validate`(인자 없음)와 같은 파일·같은 함수(catalog, needs_review, docs 전체, films, examples, 덮기 B1·D1)를 이 도구 안에서 돌려 오류를 모두 셌다: 검사 1,378개, 실패 0개, 오류 0개, 5초. 종류별 align 2개 중 실패 0, asr 2개 중 실패 0, catalog 1개 중 실패 0, final 2개 중 실패 0, lines 685개 중 실패 0, needs_review 1개 중 실패 0, script 685개 중 실패 0.
+검사는 `sinkprep validate`(인자 없음)와 같은 파일·같은 함수(catalog, needs_review, docs 전체, films, examples, 덮기 B1·D1)를 이 도구 안에서 돌려 오류를 모두 셌다: 검사 1,381개, 실패 0개, 오류 0개, 5초. 종류별 align 3개 중 실패 0, asr 3개 중 실패 0, catalog 1개 중 실패 0, final 3개 중 실패 0, lines 685개 중 실패 0, needs_review 1개 중 실패 0, script 685개 중 실패 0.
 
 - A1 모든 원본·압축 해제 파일이 정확히 한 행에: 오류 0개
 - A2 영화마다 is_primary 최대 1개: 오류 0개
@@ -120,11 +147,11 @@ catalog 에서 영상이 있는 영화 1편. 결과물은 `films/{film_id}/` (wo
   - examples: 없음
 - B4 needs_review 기준값: typed_ratio<0.85, dialogue_ratio<0.15, 화자 없는 대사>5%, 말 없는 대사(이름 줄만)>=10%, 추정 화자(speaker_inferred)>10%, OCR conf<0.85, 추출 실패·쪽 그림 실패, 한컴 PDF 글자 손실>1%
 - B5 까다로운 경우 11가지: tests/fixtures/parse/, tests/test_parse.py
-- 영상 쪽 검사 대상: films 의 align 1, asr 1, final 1, examples 의 asr·align·final 도 같은 검사
+- 영상 쪽 검사 대상: films 의 align 2, asr 2, final 2, examples 의 asr·align·final 도 같은 검사
 - C1 오류 films 0 · examples 0. 검사: validate_asr: pass 마다 낱말 번호 i 가 0..n-1 로 빠짐·겹침 없음, s<=e. validate_align: op 의 asr 참조(pass:i)가 asr.json 안에 있고 script_el 이 script.json 에 있음, asr_sha1 = asr.json 파일 sha1
 - C2 오류 films 0 · examples 0. 검사: validate_align: op 의 item 과 final.json 대사 항목이 1:1, 같은 pass 의 같은 낱말을 두 op 이 갖지 않음, added op 에 asr 범위가 있음, 대사 항목 words = 그 op 의 asr 범위 낱말(timeline.op_words). final 의 film.id = 폴더 이름
 - C3 asr_sha1 어긋남 0개, asr.json 스키마 오류 0개(films·examples). 검사: asr.json 스키마(sink.asr/1)에 정렬 칸이 없고 align.json 의 asr_sha1 이 지금 asr.json 과 같음([C1] 로 냄). 같은 asr.json 에 받아쓰기 캐시(cache/asr 의 rescue 기록: 버릇 글귀)와 LLM 캐시(cache/llm 짝 판정)도 같을 때 다시 맞추면 바이트가 같은지는 tests/test_align.py·test_final.py(align 은 asr.json 말고 두 캐시도 입력으로 읽는다)
-- D1 영상이 있는 영화 1편 가운데 final.json 이 있는 영화 1편; [D1] 오류 0개(없는 final.json·catalog 와 어긋남), films 의 final.json 스키마 오류 0개. 검사: 인자 없는 validate 가 catalog 에서 영상이 있는 대표 문서마다 films/{film_id}/final.json 이 있는지, 그 film 칸(대표 문서·영상 sha1·길이·match)이 catalog 와 같은지 봄([D1]), 스키마는 [schema]
+- D1 영상이 있는 영화 2편 가운데 final.json 이 있는 영화 2편; [D1] 오류 0개(없는 final.json·catalog 와 어긋남), films 의 final.json 스키마 오류 0개. 검사: 인자 없는 validate 가 catalog 에서 영상이 있는 대표 문서마다 films/{film_id}/final.json 이 있는지, 그 film 칸(대표 문서·영상 sha1·길이·match)이 catalog 와 같은지 봄([D1]), 스키마는 [schema]
 - D2 오류 films 0 · examples 0. 검사: validate_final: same·changed·added 는 start<end, words 있음, 낱말이 줄 안, heard = words, 시각이 영상 길이 +0.5초 안, 줄 안 낱말 시작 시각이 줄지 않음
 - D3 오류 films 0 · examples 0. 검사: validate_final: absent 는 start=end=null·script_ref 있음, added 는 script_ref=null
 - D4 오류 films 0 · examples 0. 검사: validate_final: changed 는 diffs 있음·same 은 없음, match=text 줄은 textnorm.key(heard)와 key(script_ref.text)가 same 이면 같고 changed 면 다름
@@ -132,7 +159,7 @@ catalog 에서 영상이 있는 영화 1편. 결과물은 `films/{film_id}/` (wo
 - D6 오류 films 0 · examples 0. 검사: validate_final: match=translation 이면 diffs 없음
 - D7 오류 films 0 · examples 0. 검사: validate_final: items 가 시각·id 차례, 시각 없는 항목은 대본 순서로 앞뒤 항목 사이
 - D8 오류 films 0 · examples 0. 검사: validate_final: scene·speakers·script_ref.el·src_el 참조가 있음, script.json 을 찾으면 그 scene·action·dialogue·onscreen·transition 요소가 한 번씩 나옴
-- D9 오류 films 0 · examples 0, 대본(script.json)과 견준 final.json 1/1개. **영상이 있는 영화 1편 중 final.json 이 검사를 통과한 영화 1편**(local_0270). 검사: validate_final: script.json 을 찾았을 때 대본에서 복사한 칸(대사의 speakers·how·lang·paren·sung·overlap·scene·script_ref.text, 대사 아닌 항목의 text·scene·kind, 씬·인물 칸)이 대본과 같고(시각 있는 대사의 lang 은 textnorm.spoken_lang 으로 정한 값) 씬 구간이 그 씬 항목 시각과 맞음. 곧 CBoE 입력 칸이 final.json 만으로 채워짐
+- D9 오류 films 0 · examples 0, 대본(script.json)과 견준 final.json 2/2개. **영상이 있는 영화 2편 중 final.json 이 검사를 통과한 영화 2편**(local_0270, local_0556). 검사: validate_final: script.json 을 찾았을 때 대본에서 복사한 칸(대사의 speakers·how·lang·paren·sung·overlap·scene·script_ref.text, 대사 아닌 항목의 text·scene·kind, 씬·인물 칸)이 대본과 같고(시각 있는 대사의 lang 은 textnorm.spoken_lang 으로 정한 값) 씬 구간이 그 씬 항목 시각과 맞음. 곧 CBoE 입력 칸이 final.json 만으로 채워짐
 - films 의 그 밖의 오류 코드(스키마·NFC·시각 자리수 등): 없음
 
 (보고 생성 21초: 검사 5초, 파서 정확도 3초)

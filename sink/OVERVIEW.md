@@ -126,7 +126,8 @@ sink-film.cmd "C:\경로\대본.hwp" "C:\경로\영상.mkv"
 - catalog 에 없는 대본 파일, 한국어가 아니거나 번역인 대본, 다른 영상이 이미 등록된 영화(`--force` 로 바꿈)는 아무것도 하지 않고 종료 코드 2로 멈춘다. 통일해 둔 문서에 없는 대본을 새로 넣는 길은 없다.
 - 처음 받아쓰는 영상은 `--device` 를 주지 않으면 GPU 로만 시작한다. GPU 를 못 쓰면(여유 VRAM 부족, CUDA 라이브러리 없음) 받아쓰지 않고 까닭을 찍고 멈춘다. CPU 로 돌리려면 `--device cpu` 를 직접 준다.
 - LLM 짝 판정은 기본으로 claude 를 부른다(`--no-llm` 이면 캐시만). 중간에 끊기면 같은 명령을 다시 친다. 끝난 단계는 건너뛴다.
-- 이 명령은 가짜 백엔드 시험과 대본·영상 찾기까지만 확인했고(2026-11-15), 새 영화를 끝까지 돌린 기록은 아직 이 문서에 없다.
+- 2026-11-15 에 써니(`fm847721`, `local_0556`)를 이 명령으로 처음부터 끝까지 돌렸다. 일치율 0.565 이고 검사를 통과했다(수치는 `REPORT.md` 의 영화별 절).
+- 처음 쓰는 사람을 위한 설치와 사용법은 `README.md` 에, `final.json` 의 칸 설명은 `FINAL_JSON.md` 에 따로 적었다.
 
 **단계를 하나씩 돌리기.** 영화 한 편을 처음부터 돌리는 차례다. `<영상 경로>` 는 영상 파일, `<doc_id>` 는 그 영화의 대본 문서, `<film_id>` 는 그 문서의 영화 ID 다. 둘 다 `catalog.csv` 에서 제목(`title_norm` 칸, 원본 파일 이름은 `files` 칸)으로 찾은 행의 `doc_id`·`film_id` 칸이고, 같은 영화의 문서가 여럿이면 `is_primary` 가 true 인 행을 쓴다. 추격자는 `fm55664`·`local_0270` 이다.
 
@@ -169,7 +170,7 @@ pack 이 갱신한 `data/llm_cache.zip` 은 결과와 함께 커밋한다. 빠�
 **전사 장치.** `--device auto`(기본)는 여유 VRAM 이 5000MiB 이상이면 GPU(cuda, float16), 아니면 CPU(int8)다. 여유 VRAM 은 PATH 에 있는 `nvidia-smi` 로 잰다. nvidia-smi 가 없거나 실패하면 여유를 0 으로 보아 경고 없이 CPU 로 간다(추격자 길이면 CPU 로 약 3시간). GPU 로 돌리려면 venv 에 CUDA 라이브러리가 있어야 한다.
 
 ```
-.venv\Scripts\python -m pip install -e .[asr,asr-gpu]
+.venv\Scripts\python -m pip install -e ".[asr,asr-gpu]"
 ```
 
 `asr-gpu` 는 `nvidia-cublas-cu12` 와 `nvidia-cudnn-cu12`(9.x)다. 2026-11-15 에 설치한 판은 cublas 12.9.2.10, cudnn 9.28.1.4 다. `asr.py` 가 `site-packages/nvidia/*/bin` 을 DLL 찾는 길에 더한다. 이 패키지가 없으면 `Library cublas64_12.dll is not found` 로 cuda 를 열지 못한다. 그때 CPU 로 떨어지는 것은 장치가 `auto` 일 때뿐이고, `--device cuda` 이거나 단계 지문의 장치가 cuda 인 영화(추격자)는 오류(`AsrUnavailable`)로 멈춘다. ffmpeg 와 ffprobe 는 PATH 에 따로 있어야 한다.
@@ -344,7 +345,7 @@ flowchart TD
 
 ### 3.4 결과물
 
-형식은 명세 4.5~4.7절에 확정돼 있고 `schema/`, `examples/` 에 스키마와 예시가 있다.
+형식은 명세 4.5~4.7절에 확정돼 있고 `schema/`, `examples/` 에 스키마와 예시가 있다. `final.json` 의 칸을 하나씩 풀어 쓴 설명은 `FINAL_JSON.md` 다.
 
 | 파일 | 담는 것 |
 |---|---|
