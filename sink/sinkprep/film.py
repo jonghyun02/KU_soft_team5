@@ -239,7 +239,8 @@ def check_script(prim: dict) -> None:
         raise Stop(f"{doc} 는 {what}이다(catalog script_lang={lang}, is_translation={prim.get('is_translation')}). "
                    "영상 쪽은 지금 한국어 대본과 한국어 영화만 최종본까지 간다(번역은 범위 밖)")
     if not (paths.DOCS / doc / "script.json").is_file():
-        raise Stop(f"docs/{doc}/script.json 이 없다: 대본 쪽 처리(python -I -m sinkprep all)를 먼저 한다")
+        raise Stop(f"docs/{doc}/script.json 이 없다: 통일한 대본 폴더 docs 를 넣는다(README.md 3절). "
+                   "원본 대본 묶음이 있으면 대본 쪽 처리(python -I -m sinkprep all)를 먼저 한다")
 
 
 # ------------------------------------------------------------------ 장치
