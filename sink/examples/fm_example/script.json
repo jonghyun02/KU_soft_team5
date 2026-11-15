@@ -1,0 +1,302 @@
+{
+ "schema": "sink.script/1",
+ "doc_id": "fm55574",
+ "parser": {
+  "name": "sink-parse",
+  "version": "0.1.0"
+ },
+ "lang": "ko",
+ "front": {
+  "title": "범죄의 재구성",
+  "writer": "최동훈",
+  "version_raw": "촬영본",
+  "date": null
+ },
+ "people": [
+  {
+   "id": "P01",
+   "name": "형사",
+   "aliases": [
+    "강형사"
+   ],
+   "count": 3
+  },
+  {
+   "id": "P02",
+   "name": "창혁",
+   "aliases": [],
+   "count": 2
+  },
+  {
+   "id": "P03",
+   "name": "천세황",
+   "aliases": [],
+   "count": 1
+  },
+  {
+   "id": "P04",
+   "name": "제임스",
+   "aliases": [],
+   "count": 1
+  }
+ ],
+ "scenes": [
+  {
+   "id": "SC001",
+   "number": "12",
+   "heading": "경찰서 취조실 - 밤",
+   "place": "경찰서 취조실",
+   "time": "밤",
+   "flags": []
+  },
+  {
+   "id": "SC002",
+   "number": "12A",
+   "heading": "경찰서 복도 - 밤 (회상)",
+   "place": "경찰서 복도",
+   "time": "밤",
+   "flags": [
+    "flashback"
+   ]
+  }
+ ],
+ "elements": [
+  {
+   "id": "E0001",
+   "type": "front",
+   "scene": null,
+   "text": "범죄의 재구성",
+   "lines": [
+    0
+   ]
+  },
+  {
+   "id": "E0002",
+   "type": "front",
+   "scene": null,
+   "text": "각본 최동훈",
+   "lines": [
+    1
+   ]
+  },
+  {
+   "id": "E0003",
+   "type": "front",
+   "scene": null,
+   "text": "촬영본",
+   "lines": [
+    2
+   ]
+  },
+  {
+   "id": "E0004",
+   "type": "scene",
+   "scene": "SC001",
+   "text": "S#12. 경찰서 취조실 - 밤",
+   "lines": [
+    4
+   ]
+  },
+  {
+   "id": "E0005",
+   "type": "action",
+   "scene": "SC001",
+   "text": "형사, 서류를 책상에 던진다.",
+   "lines": [
+    5
+   ]
+  },
+  {
+   "id": "E0006",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P01"
+   ],
+   "speaker_raw": "형사",
+   "how": "on",
+   "lang": "ko",
+   "text": "너 어제 어디 있었어?",
+   "raw": "형사      너 어제 어디 있었어?",
+   "paren": [],
+   "gloss": null,
+   "sung": false,
+   "overlap": null,
+   "lines": [
+    6
+   ]
+  },
+  {
+   "id": "E0007",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P02"
+   ],
+   "speaker_raw": "창혁",
+   "how": "on",
+   "lang": "ko",
+   "text": "집에 있었는데요.",
+   "raw": "창혁      (웃으며) 집에 있었는데요.",
+   "paren": [
+    {
+     "text": "웃으며",
+     "at": 0
+    }
+   ],
+   "gloss": null,
+   "sung": false,
+   "overlap": null,
+   "lines": [
+    7
+   ]
+  },
+  {
+   "id": "E0008",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P01"
+   ],
+   "speaker_raw": "형사",
+   "how": "on",
+   "lang": "ko",
+   "text": "거짓말하지 마.",
+   "raw": "형사      거짓말하지 마.",
+   "paren": [],
+   "gloss": null,
+   "sung": false,
+   "overlap": null,
+   "lines": [
+    8
+   ]
+  },
+  {
+   "id": "E0009",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P03"
+   ],
+   "speaker_raw": "천세황(무전소리)",
+   "how": "radio",
+   "lang": "ko",
+   "text": "본부, 여기는 3호차. 응답하라, 오버.",
+   "raw": "천세황(무전소리)  본부, 여기는 3호차.\n응답하라, 오버.",
+   "paren": [],
+   "gloss": null,
+   "sung": false,
+   "overlap": null,
+   "lines": [
+    9,
+    12
+   ]
+  },
+  {
+   "id": "E0010",
+   "type": "onscreen",
+   "scene": "SC001",
+   "kind": "insert",
+   "text": "진술서: 2003년 4월 2일",
+   "lines": [
+    13
+   ]
+  },
+  {
+   "id": "E0011",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P01",
+    "P02"
+   ],
+   "speaker_raw": "일동",
+   "how": "on",
+   "lang": "ko",
+   "text": "아리랑 아리랑 아라리요~",
+   "raw": "일동      (노래하며) 아리랑 아리랑 아라리요~",
+   "paren": [
+    {
+     "text": "노래하며",
+     "at": 0
+    }
+   ],
+   "gloss": null,
+   "sung": true,
+   "overlap": null,
+   "lines": [
+    14
+   ]
+  },
+  {
+   "id": "E0012",
+   "type": "dialogue",
+   "scene": "SC001",
+   "speakers": [
+    "P04"
+   ],
+   "speaker_raw": "제임스",
+   "how": "on",
+   "lang": "en",
+   "text": "Sir!",
+   "raw": "제임스    Sir! (선생님!)",
+   "paren": [],
+   "gloss": "선생님!",
+   "sung": false,
+   "overlap": null,
+   "lines": [
+    15
+   ]
+  },
+  {
+   "id": "E0013",
+   "type": "transition",
+   "scene": "SC001",
+   "text": "CUT TO",
+   "lines": [
+    16
+   ]
+  },
+  {
+   "id": "E0014",
+   "type": "scene",
+   "scene": "SC002",
+   "text": "S#12A. 경찰서 복도 - 밤 (회상)",
+   "lines": [
+    17
+   ]
+  }
+ ],
+ "dropped": [
+  {
+   "lines": [
+    3
+   ],
+   "why": "page_header"
+  },
+  {
+   "lines": [
+    10
+   ],
+   "why": "cont_marker"
+  },
+  {
+   "lines": [
+    11
+   ],
+   "why": "page_number"
+  }
+ ],
+ "quality": {
+  "lines": 18,
+  "typed_ratio": 1.0,
+  "dialogue_ratio": 0.389,
+  "unknown_ratio": 0.0,
+  "speakerless_dialogue": 0,
+  "score": 0.95,
+  "notes": [
+   "(계속) 은 쪽 넘김 표시로 보고 dropped(cont_marker) 로 보냄",
+   "괄호 (회상) 이 붙은 씬 머리는 flags 에 flashback"
+  ]
+ }
+}

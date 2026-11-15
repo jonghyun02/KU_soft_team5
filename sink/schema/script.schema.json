@@ -1,0 +1,191 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://sink.local/schema/script.schema.json",
+ "title": "sink script.json (구조 파싱)",
+ "description": "명세 4.4.2. 요소 종류 7종(B3). 의미 규칙(id 유일, 씬·인물 참조, lines.jsonl 줄 덮기 B2, paren 위치, NFC)은 sinkprep.validate 가 따로 본다.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["schema", "doc_id", "parser", "lang", "front", "people", "scenes", "elements", "dropped", "quality"],
+ "properties": {
+  "schema": {"const": "sink.script/1"},
+  "doc_id": {"$ref": "#/$defs/doc_id"},
+  "parser": {
+   "type": "object",
+   "required": ["name", "version"],
+   "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1}
+   }
+  },
+  "lang": {"$ref": "#/$defs/lang"},
+  "front": {
+   "type": "object",
+   "required": ["title", "writer", "version_raw", "date"],
+   "properties": {
+    "title": {"type": ["string", "null"]},
+    "writer": {"type": ["string", "null"]},
+    "version_raw": {"type": ["string", "null"]},
+    "date": {"type": ["string", "null"]}
+   }
+  },
+  "people": {"type": "array", "items": {"$ref": "#/$defs/person"}},
+  "scenes": {"type": "array", "items": {"$ref": "#/$defs/scene"}},
+  "elements": {"type": "array", "items": {"$ref": "#/$defs/element"}},
+  "dropped": {"type": "array", "items": {"$ref": "#/$defs/dropped"}},
+  "quality": {"$ref": "#/$defs/quality"}
+ },
+ "$defs": {
+  "doc_id": {"type": "string", "pattern": "^fm[0-9]+(_[0-9]+)?$"},
+  "lang": {"type": "string", "pattern": "^([a-z]{2,3}(-[A-Za-z0-9]{2,8})?|mixed|unknown)$"},
+  "person_id": {"type": "string", "pattern": "^P[0-9]{2,}$"},
+  "scene_id": {"type": "string", "pattern": "^SC[0-9]{3,}$"},
+  "el_id": {"type": "string", "pattern": "^E[0-9]{4,}$"},
+  "scene_ref": {"anyOf": [{"$ref": "#/$defs/scene_id"}, {"type": "null"}]},
+  "unit": {"type": "number", "minimum": 0, "maximum": 1},
+  "line_refs": {
+   "type": "array",
+   "minItems": 1,
+   "uniqueItems": true,
+   "items": {"type": "integer", "minimum": 0}
+  },
+  "how": {"enum": ["on", "off", "narration", "phone", "radio", "broadcast", "video", "inner", "unknown"]},
+  "scene_flag": {"enum": ["montage", "flashback", "intercut", "dream"]},
+  "onscreen_kind": {"enum": ["subtitle", "insert", "title", "other"]},
+  "paren": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["text", "at"],
+   "properties": {
+    "text": {"type": "string"},
+    "at": {"type": "integer", "minimum": 0}
+   }
+  },
+  "person": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "name", "aliases", "count"],
+   "properties": {
+    "id": {"$ref": "#/$defs/person_id"},
+    "name": {"type": "string", "minLength": 1},
+    "aliases": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "count": {"type": "integer", "minimum": 0}
+   }
+  },
+  "scene": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "number", "heading", "place", "time", "flags"],
+   "properties": {
+    "id": {"$ref": "#/$defs/scene_id"},
+    "number": {"type": ["string", "null"], "minLength": 1},
+    "heading": {"type": "string"},
+    "place": {"type": ["string", "null"]},
+    "time": {"type": ["string", "null"]},
+    "flags": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/scene_flag"}}
+   }
+  },
+  "element": {
+   "type": "object",
+   "required": ["id", "type"],
+   "properties": {
+    "type": {"enum": ["front", "scene", "action", "dialogue", "onscreen", "transition", "unknown"]}
+   },
+   "allOf": [
+    {"if": {"required": ["type"], "properties": {"type": {"const": "dialogue"}}},
+     "then": {"$ref": "#/$defs/el_dialogue"}},
+    {"if": {"required": ["type"], "properties": {"type": {"const": "onscreen"}}},
+     "then": {"$ref": "#/$defs/el_onscreen"}},
+    {"if": {"required": ["type"], "properties": {"type": {"const": "scene"}}},
+     "then": {"$ref": "#/$defs/el_scene"}},
+    {"if": {"required": ["type"], "properties": {"type": {"enum": ["front", "action", "transition", "unknown"]}}},
+     "then": {"$ref": "#/$defs/el_plain"}}
+   ]
+  },
+  "el_plain": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "type", "scene", "text", "lines"],
+   "properties": {
+    "id": {"$ref": "#/$defs/el_id"},
+    "type": {"enum": ["front", "action", "transition", "unknown"]},
+    "scene": {"$ref": "#/$defs/scene_ref"},
+    "text": {"type": "string"},
+    "lines": {"$ref": "#/$defs/line_refs"}
+   }
+  },
+  "el_scene": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "type", "scene", "text", "lines"],
+   "properties": {
+    "id": {"$ref": "#/$defs/el_id"},
+    "type": {"const": "scene"},
+    "scene": {"$ref": "#/$defs/scene_id"},
+    "text": {"type": "string"},
+    "lines": {"$ref": "#/$defs/line_refs"}
+   }
+  },
+  "el_onscreen": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "type", "scene", "kind", "text", "lines"],
+   "properties": {
+    "id": {"$ref": "#/$defs/el_id"},
+    "type": {"const": "onscreen"},
+    "scene": {"$ref": "#/$defs/scene_ref"},
+    "kind": {"$ref": "#/$defs/onscreen_kind"},
+    "text": {"type": "string"},
+    "lines": {"$ref": "#/$defs/line_refs"}
+   }
+  },
+  "el_dialogue": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "type", "scene", "speakers", "speaker_raw", "how", "lang", "text", "raw",
+                "paren", "gloss", "sung", "overlap", "lines"],
+   "properties": {
+    "id": {"$ref": "#/$defs/el_id"},
+    "type": {"const": "dialogue"},
+    "scene": {"$ref": "#/$defs/scene_ref"},
+    "speakers": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/person_id"}},
+    "speaker_inferred": {"type": "boolean",
+                         "description": "선택 칸(0.2.0): 참이면 speakers 는 대본에 적힌 이름이 아니라 앞 대사에서 이어받은 추정값"},
+    "speaker_raw": {"type": ["string", "null"]},
+    "how": {"$ref": "#/$defs/how"},
+    "lang": {"$ref": "#/$defs/lang"},
+    "text": {"type": "string"},
+    "raw": {"type": "string"},
+    "paren": {"type": "array", "items": {"$ref": "#/$defs/paren"}},
+    "gloss": {"type": ["string", "null"]},
+    "sung": {"type": "boolean"},
+    "overlap": {"type": ["integer", "null"], "minimum": 0},
+    "lines": {"$ref": "#/$defs/line_refs"}
+   }
+  },
+  "dropped": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["lines", "why"],
+   "properties": {
+    "lines": {"$ref": "#/$defs/line_refs"},
+    "why": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$",
+            "$comment": "예: page_header, page_footer, page_number, cont_marker, continued, revision_mark, blank. 열거값은 명세에 없어 snake_case 코드만 강제."}
+   }
+  },
+  "quality": {
+   "type": "object",
+   "required": ["lines", "typed_ratio", "dialogue_ratio", "unknown_ratio", "speakerless_dialogue", "score"],
+   "properties": {
+    "lines": {"type": "integer", "minimum": 0},
+    "typed_ratio": {"$ref": "#/$defs/unit"},
+    "dialogue_ratio": {"$ref": "#/$defs/unit"},
+    "unknown_ratio": {"$ref": "#/$defs/unit"},
+    "speakerless_dialogue": {"type": "integer", "minimum": 0},
+    "empty_dialogue": {"type": "integer", "minimum": 0, "$comment": "말(text)이 빈 대사 요소 수(이름 줄만 잡힘). 선택 칸, 구현 중 보완 2026-11-13"},
+    "inferred_speaker": {"type": "integer", "minimum": 0, "$comment": "speaker_inferred 인 대사 요소 수. 선택 칸"},
+    "score": {"$ref": "#/$defs/unit"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+   }
+  }
+ }
+}

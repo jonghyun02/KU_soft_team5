@@ -1,0 +1,40 @@
+{"n": 0, "type": "dropped", "speaker": null, "scene_number": null, "note": "표지 쪽 아래 쪽번호 1"}
+{"n": 1, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표 제목"}
+{"n": 2, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 3, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 4, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 5, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 6, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 7, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 8, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 9, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 10, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 11, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 12, "type": "front", "speaker": null, "scene_number": null, "note": "등장인물표"}
+{"n": 13, "type": "front", "speaker": null, "scene_number": null, "note": "첫 대본 쪽 위 판본 표시, 다음 쪽부터 반복 안 됨"}
+{"n": 14, "type": "scene", "speaker": null, "scene_number": "P1", "note": "프롤로그 씬 번호 P1, 뒤에 10. 11. 로 이어짐"}
+{"n": 15, "type": "onscreen", "speaker": null, "scene_number": null, "note": null}
+{"n": 16, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 17, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 18, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 19, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 20, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 21, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 22, "type": "dialogue", "speaker": "일동", "scene_number": null, "note": null}
+{"n": 23, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 24, "type": "dialogue", "speaker": "만식", "scene_number": null, "note": null}
+{"n": 25, "type": "dialogue", "speaker": "만식", "scene_number": null, "note": "들여쓴 이어지는 대사"}
+{"n": 26, "type": "dialogue", "speaker": "일동", "scene_number": null, "note": null}
+{"n": 27, "type": "dialogue", "speaker": "만식", "scene_number": null, "note": null}
+{"n": 28, "type": "dialogue", "speaker": "일동", "scene_number": null, "note": null}
+{"n": 29, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 30, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 31, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 32, "type": "dialogue", "speaker": "만식", "scene_number": null, "note": null}
+{"n": 33, "type": "dialogue", "speaker": "형식", "scene_number": null, "note": null}
+{"n": 34, "type": "scene", "speaker": null, "scene_number": "P2", "note": null}
+{"n": 35, "type": "onscreen", "speaker": null, "scene_number": null, "note": null}
+{"n": 36, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 37, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 38, "type": "action", "speaker": null, "scene_number": null, "note": null}
+{"n": 39, "type": "dropped", "speaker": null, "scene_number": null, "note": "쪽번호 3"}

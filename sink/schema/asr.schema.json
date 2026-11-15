@@ -1,0 +1,64 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://sink.local/schema/asr.schema.json",
+ "title": "sink work/asr.json (받아쓰기 기록)",
+ "description": "명세 4.5. 정렬·판정 결과는 넣지 않는다(C3, 모르는 칸 금지). 낱말 번호 i 가 pass 안에서 0..n-1 유일·연속인지(C1)는 sinkprep.validate 가 따로 본다.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["schema", "video_sha1", "lang", "passes", "vad", "chunks"],
+ "properties": {
+  "schema": {"const": "sink.asr/1"},
+  "video_sha1": {"$ref": "#/$defs/sha1"},
+  "lang": {"$ref": "#/$defs/lang"},
+  "passes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/pass"}},
+  "vad": {
+   "type": "array",
+   "items": {
+    "type": "array",
+    "prefixItems": [{"$ref": "#/$defs/time"}, {"$ref": "#/$defs/time"}],
+    "minItems": 2,
+    "maxItems": 2
+   }
+  },
+  "chunks": {"type": "array", "items": {"$ref": "#/$defs/chunk"}}
+ },
+ "$defs": {
+  "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+  "lang": {"type": "string", "pattern": "^([a-z]{2,3}(-[A-Za-z0-9]{2,8})?|mixed|unknown)$"},
+  "time": {"type": "number", "minimum": 0},
+  "pass": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "model", "context", "words"],
+   "properties": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "model": {"type": "string", "minLength": 1},
+    "context": {"type": ["string", "null"]},
+    "words": {"type": "array", "items": {"$ref": "#/$defs/word"}}
+   }
+  },
+  "word": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["i", "w", "s", "e", "p"],
+   "properties": {
+    "i": {"type": "integer", "minimum": 0},
+    "w": {"type": "string"},
+    "s": {"$ref": "#/$defs/time"},
+    "e": {"$ref": "#/$defs/time"},
+    "p": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "lang": {"$ref": "#/$defs/lang"}
+   }
+  },
+  "chunk": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["start", "end", "lang"],
+   "properties": {
+    "start": {"$ref": "#/$defs/time"},
+    "end": {"$ref": "#/$defs/time"},
+    "lang": {"$ref": "#/$defs/lang"}
+   }
+  }
+ }
+}

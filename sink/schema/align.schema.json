@@ -1,0 +1,87 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://sink.local/schema/align.schema.json",
+ "title": "sink work/align.json (연결·판정 기록)",
+ "description": "명세 4.6. 연산 1개 = 최종 대사 1줄. op 은 final.json status 와 같은 값. 연결은 asr 낱말 번호(pass:i)와 대본 요소 id 로만 가리킨다(C1). final 과 1:1(C2)·asr 참조 존재는 sinkprep.validate 가 따로 본다.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["schema", "script_doc", "asr_sha1", "method", "ops", "scenes"],
+ "properties": {
+  "schema": {"const": "sink.align/1"},
+  "script_doc": {"type": "string", "pattern": "^fm[0-9]+(_[0-9]+)?$"},
+  "asr_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+  "method": {
+   "type": "object",
+   "required": ["anchor", "acoustic", "forced", "translate"],
+   "properties": {
+    "anchor": {"type": ["string", "null"]},
+    "acoustic": {"type": ["string", "null"]},
+    "forced": {"type": ["string", "null"]},
+    "translate": {"type": ["string", "null"]}
+   }
+  },
+  "ops": {"type": "array", "items": {"$ref": "#/$defs/op"}},
+  "scenes": {"type": "array", "items": {"$ref": "#/$defs/scene"}}
+ },
+ "$defs": {
+  "el_id": {"type": "string", "pattern": "^E[0-9]{4,}$"},
+  "asr_ref": {"type": "string", "pattern": "^[a-z][a-z0-9_]*:(0|[1-9][0-9]*)$"},
+  "time": {"type": "number", "minimum": 0},
+  "op": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["item", "op", "script_el", "asr", "match", "decided_by"],
+   "properties": {
+    "item": {"type": "string", "pattern": "^I[0-9]{4,}$"},
+    "op": {"enum": ["same", "changed", "added", "absent"]},
+    "script_el": {"anyOf": [{"$ref": "#/$defs/el_id"}, {"type": "null"}]},
+    "asr": {
+     "anyOf": [
+      {"type": "null"},
+      {"type": "array", "prefixItems": [{"$ref": "#/$defs/asr_ref"}, {"$ref": "#/$defs/asr_ref"}],
+       "minItems": 2, "maxItems": 2}
+     ]
+    },
+    "match": {"enum": ["text", "translation", null]},
+    "text_score": {"type": ["number", "null"]},
+    "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
+    "chosen": {"type": ["integer", "null"], "minimum": 0},
+    "decided_by": {"enum": ["rule", "acoustic", "llm", "translation"]}
+   },
+   "allOf": [
+    {"$comment": "added: 대본 요소 없음, match 없음 (D3 와 같은 규칙)",
+     "if": {"required": ["op"], "properties": {"op": {"const": "added"}}},
+     "then": {"properties": {"script_el": {"type": "null"}, "match": {"const": null}}}},
+    {"$comment": "absent: 영상에 없음, 낱말 없음, 대본 요소 있음",
+     "if": {"required": ["op"], "properties": {"op": {"const": "absent"}}},
+     "then": {"properties": {"asr": {"type": "null"}, "script_el": {"$ref": "#/$defs/el_id"},
+                             "match": {"enum": ["text", "translation"]}}}},
+    {"$comment": "same·changed: 대본 요소와 낱말 범위가 모두 있음",
+     "if": {"required": ["op"], "properties": {"op": {"enum": ["same", "changed"]}}},
+     "then": {"properties": {"asr": {"type": "array"}, "script_el": {"$ref": "#/$defs/el_id"},
+                             "match": {"enum": ["text", "translation"]}}}}
+   ]
+  },
+  "candidate": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["text", "src", "score"],
+   "properties": {
+    "text": {"type": "string"},
+    "src": {"type": "string", "minLength": 1},
+    "score": {"type": ["number", "null"]}
+   }
+  },
+  "scene": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["scene", "start", "end", "how"],
+   "properties": {
+    "scene": {"type": "string", "pattern": "^SC[0-9]{3,}$"},
+    "start": {"anyOf": [{"$ref": "#/$defs/time"}, {"type": "null"}]},
+    "end": {"anyOf": [{"$ref": "#/$defs/time"}, {"type": "null"}]},
+    "how": {"type": "string", "minLength": 1}
+   }
+  }
+ }
+}

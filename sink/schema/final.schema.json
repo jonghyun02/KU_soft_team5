@@ -1,0 +1,250 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://sink.local/schema/final.schema.json",
+ "title": "sink final.json (최종 영상 기준 대본, CBoE 입력)",
+ "description": "명세 4.7. 항목 종류는 scene·action·dialogue·onscreen·transition(front·unknown 은 넣지 않음). 스키마로 표현되는 규칙(D3·D4·D6, timing)은 여기서, 비교가 필요한 규칙(D2·D5·D7·D8)은 sinkprep.validate 가 본다.",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["schema", "film", "made", "people", "scenes", "items", "quality"],
+ "properties": {
+  "schema": {"const": "sink.final/1"},
+  "film": {"$ref": "#/$defs/film"},
+  "made": {
+   "type": "object",
+   "required": ["pipeline", "asr", "aligner", "translator"],
+   "properties": {
+    "pipeline": {"type": "string", "minLength": 1},
+    "asr": {"type": ["string", "null"]},
+    "aligner": {"type": ["string", "null"]},
+    "translator": {"type": ["string", "null"]}
+   }
+  },
+  "people": {"type": "array", "items": {"$ref": "#/$defs/person"}},
+  "scenes": {"type": "array", "items": {"$ref": "#/$defs/scene"}},
+  "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+  "quality": {
+   "type": "object",
+   "required": ["dialogue", "same", "changed", "added", "absent", "speaker_unknown", "mean_word_p"],
+   "properties": {
+    "dialogue": {"type": "integer", "minimum": 0},
+    "same": {"type": "integer", "minimum": 0},
+    "changed": {"type": "integer", "minimum": 0},
+    "added": {"type": "integer", "minimum": 0},
+    "absent": {"type": "integer", "minimum": 0},
+    "speaker_unknown": {"type": "integer", "minimum": 0},
+    "mean_word_p": {"anyOf": [{"$ref": "#/$defs/unit"}, {"type": "null"}]}
+   }
+  }
+ },
+ "$defs": {
+  "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+  "doc_id": {"type": "string", "pattern": "^fm[0-9]+(_[0-9]+)?$"},
+  "lang": {"type": "string", "pattern": "^([a-z]{2,3}(-[A-Za-z0-9]{2,8})?|mixed|unknown)$"},
+  "person_id": {"type": "string", "pattern": "^P[0-9]{2,}$"},
+  "scene_id": {"type": "string", "pattern": "^SC[0-9]{3,}$"},
+  "el_id": {"type": "string", "pattern": "^E[0-9]{4,}$"},
+  "item_id": {"type": "string", "pattern": "^I[0-9]{4,}$"},
+  "unit": {"type": "number", "minimum": 0, "maximum": 1},
+  "time": {"type": "number", "minimum": 0},
+  "time_or_null": {"anyOf": [{"$ref": "#/$defs/time"}, {"type": "null"}]},
+  "timing": {"enum": ["aligned", "estimated", "none"]},
+  "how": {"enum": ["on", "off", "narration", "phone", "radio", "broadcast", "video", "inner", "unknown"]},
+  "film": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "title", "title_orig", "year", "video", "script"],
+   "properties": {
+    "id": {"type": "string", "pattern": "^(kmdb|tmdb|local)_[A-Za-z0-9]+$"},
+    "title": {"type": "string", "minLength": 1},
+    "title_orig": {"type": ["string", "null"]},
+    "year": {"type": ["integer", "null"], "minimum": 1880, "maximum": 2100},
+    "video": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": ["sha1", "duration", "lang"],
+     "properties": {
+      "sha1": {"$ref": "#/$defs/sha1"},
+      "duration": {"type": "number", "exclusiveMinimum": 0},
+      "lang": {"$ref": "#/$defs/lang"}
+     }
+    },
+    "script": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": ["doc_id", "version", "lang", "translation", "match"],
+     "properties": {
+      "doc_id": {"$ref": "#/$defs/doc_id"},
+      "version": {"enum": ["draft", "revised", "bound", "shooting", "final", "translation", "unknown"]},
+      "lang": {"$ref": "#/$defs/lang"},
+      "translation": {"type": "boolean"},
+      "match": {"anyOf": [{"$ref": "#/$defs/unit"}, {"type": "null"}]}
+     }
+    }
+   }
+  },
+  "person": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "name", "aliases"],
+   "properties": {
+    "id": {"$ref": "#/$defs/person_id"},
+    "name": {"type": "string", "minLength": 1},
+    "aliases": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+   }
+  },
+  "scene": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "number", "heading", "place", "time", "flags", "start", "end", "timing"],
+   "properties": {
+    "id": {"$ref": "#/$defs/scene_id"},
+    "number": {"type": ["string", "null"], "minLength": 1},
+    "heading": {"type": "string"},
+    "place": {"type": ["string", "null"]},
+    "time": {"type": ["string", "null"]},
+    "flags": {"type": "array", "uniqueItems": true,
+              "items": {"enum": ["montage", "flashback", "intercut", "dream"]}},
+    "start": {"$ref": "#/$defs/time_or_null"},
+    "end": {"$ref": "#/$defs/time_or_null"},
+    "timing": {"$ref": "#/$defs/timing"}
+   }
+  },
+  "word": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["w", "s", "e", "p"],
+   "properties": {
+    "w": {"type": "string", "minLength": 1},
+    "s": {"$ref": "#/$defs/time"},
+    "e": {"$ref": "#/$defs/time"},
+    "p": {"anyOf": [{"$ref": "#/$defs/unit"}, {"type": "null"}]},
+    "lang": {"$ref": "#/$defs/lang"}
+   }
+  },
+  "diff": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["kind", "script", "heard"],
+   "properties": {
+    "kind": {"enum": ["filler", "repeat", "word", "number", "spelling"]},
+    "script": {"type": "string"},
+    "heard": {"type": "string"}
+   }
+  },
+  "paren": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["text", "at"],
+   "properties": {
+    "text": {"type": "string"},
+    "at": {"type": "integer", "minimum": 0}
+   }
+  },
+  "item": {
+   "type": "object",
+   "required": ["id", "type"],
+   "properties": {
+    "type": {"enum": ["scene", "action", "dialogue", "onscreen", "transition"]}
+   },
+   "allOf": [
+    {"if": {"required": ["type"], "properties": {"type": {"const": "dialogue"}}},
+     "then": {"$ref": "#/$defs/item_dialogue"}},
+    {"if": {"required": ["type"], "properties": {"type": {"enum": ["scene", "action", "onscreen", "transition"]}}},
+     "then": {"$ref": "#/$defs/item_plain"}},
+    {"$comment": "timing=none 이면 시각 없음, 아니면 start 있음",
+     "if": {"required": ["timing"], "properties": {"timing": {"const": "none"}}},
+     "then": {"properties": {"start": {"type": "null"}, "end": {"type": "null"}}},
+     "else": {"properties": {"start": {"type": "number"}}}}
+   ]
+  },
+  "item_plain": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "type", "scene", "text", "start", "end", "timing", "src_el"],
+   "properties": {
+    "id": {"$ref": "#/$defs/item_id"},
+    "type": {"enum": ["scene", "action", "onscreen", "transition"]},
+    "scene": {"anyOf": [{"$ref": "#/$defs/scene_id"}, {"type": "null"}]},
+    "kind": {"enum": ["subtitle", "insert", "title", "other"],
+             "$comment": "onscreen 항목만, 대본 요소의 kind 를 복사(선택)"},
+    "text": {"type": "string"},
+    "start": {"$ref": "#/$defs/time_or_null"},
+    "end": {"$ref": "#/$defs/time_or_null"},
+    "timing": {"$ref": "#/$defs/timing"},
+    "src_el": {"anyOf": [{"$ref": "#/$defs/el_id"}, {"type": "null"}]}
+   },
+   "if": {"required": ["type"], "properties": {"type": {"const": "onscreen"}}},
+   "then": true,
+   "else": {"not": {"required": ["kind"]}}
+  },
+  "item_dialogue": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["id", "type", "scene", "speakers", "speaker_from", "how", "lang", "heard", "ko", "ko_src",
+                "start", "end", "timing", "words", "status", "match", "script_ref", "diffs",
+                "paren", "sung", "overlap", "conf", "src_el"],
+   "properties": {
+    "id": {"$ref": "#/$defs/item_id"},
+    "type": {"const": "dialogue"},
+    "scene": {"anyOf": [{"$ref": "#/$defs/scene_id"}, {"type": "null"}]},
+    "speakers": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/person_id"}},
+    "speaker_from": {"enum": ["script", "translation_match", "unknown"]},
+    "how": {"$ref": "#/$defs/how"},
+    "lang": {"$ref": "#/$defs/lang"},
+    "heard": {"type": ["string", "null"]},
+    "ko": {"type": ["string", "null"]},
+    "ko_src": {"enum": ["same", "mt", "human", null]},
+    "start": {"$ref": "#/$defs/time_or_null"},
+    "end": {"$ref": "#/$defs/time_or_null"},
+    "timing": {"$ref": "#/$defs/timing"},
+    "words": {"type": "array", "items": {"$ref": "#/$defs/word"}},
+    "status": {"enum": ["same", "changed", "added", "absent"]},
+    "match": {"enum": ["text", "translation", null]},
+    "script_ref": {
+     "anyOf": [
+      {"type": "null"},
+      {"type": "object", "additionalProperties": false, "required": ["el", "text"],
+       "properties": {"el": {"$ref": "#/$defs/el_id"}, "text": {"type": "string"}}}
+     ]
+    },
+    "diffs": {"type": "array", "items": {"$ref": "#/$defs/diff"}},
+    "paren": {"type": "array", "items": {"$ref": "#/$defs/paren"}},
+    "sung": {"type": "boolean"},
+    "overlap": {"type": ["integer", "null"], "minimum": 0},
+    "conf": {"anyOf": [{"$ref": "#/$defs/unit"}, {"type": "null"}]},
+    "src_el": {"anyOf": [{"$ref": "#/$defs/el_id"}, {"type": "null"}]}
+   },
+   "allOf": [
+    {"$comment": "D3 absent: 시각 없음, 대본 참조 있음, 낱말·들린 말 없음",
+     "if": {"required": ["status"], "properties": {"status": {"const": "absent"}}},
+     "then": {"properties": {"start": {"type": "null"}, "end": {"type": "null"},
+                             "timing": {"const": "none"}, "words": {"maxItems": 0},
+                             "heard": {"type": "null"}, "script_ref": {"type": "object"},
+                             "match": {"enum": ["text", "translation"]}}}},
+    {"$comment": "D3 added: 대본 참조 없음, match 없음",
+     "if": {"required": ["status"], "properties": {"status": {"const": "added"}}},
+     "then": {"properties": {"script_ref": {"type": "null"}, "match": {"const": null},
+                             "src_el": {"type": "null"}}}},
+    {"$comment": "same·changed·added: 시각·낱말·들린 말 있음 (D2 의 비교 부분은 파이썬)",
+     "if": {"required": ["status"], "properties": {"status": {"enum": ["same", "changed", "added"]}}},
+     "then": {"properties": {"start": {"type": "number"}, "end": {"type": "number"},
+                             "words": {"minItems": 1}, "heard": {"type": "string", "minLength": 1}}}},
+    {"$comment": "same·changed: 대본 참조 있음",
+     "if": {"required": ["status"], "properties": {"status": {"enum": ["same", "changed"]}}},
+     "then": {"properties": {"script_ref": {"type": "object"}, "match": {"enum": ["text", "translation"]}}}},
+    {"$comment": "D4 changed: 차이 1개 이상",
+     "if": {"required": ["status"], "properties": {"status": {"const": "changed"}}},
+     "then": {"properties": {"diffs": {"minItems": 1}}}},
+    {"$comment": "D4 same·added·absent: 차이 없음",
+     "if": {"required": ["status"], "properties": {"status": {"enum": ["same", "added", "absent"]}}},
+     "then": {"properties": {"diffs": {"maxItems": 0}}}},
+    {"$comment": "D6 match=translation: 낱말 판정 안 함",
+     "if": {"required": ["match"], "properties": {"match": {"const": "translation"}}},
+     "then": {"properties": {"diffs": {"maxItems": 0}}}},
+    {"$comment": "D5 lang=ko 면 ko_src=same (낱말 lang 으로 외국어가 섞인 경우는 파이썬이 봄)",
+     "if": {"required": ["ko_src"], "properties": {"ko_src": {"const": "same"}}},
+     "then": {"properties": {"lang": {"const": "ko"}}}}
+   ]
+  }
+ }
+}
