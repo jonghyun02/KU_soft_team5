@@ -52,8 +52,9 @@ class EDarchStreamingGenerator:
         temp_text: float = 0.4,
         top_k_audio: int = 250,
         top_k_text: int = 50,
+        sim_bin: Optional[int] = None,
     ):
-        """모델, 배치 크기, CFG 가이던스 계수, 샘플링 온도 및 순환 지연 버퍼를 초기화합니다."""
+        """모델, 배치 크기, CFG 계수, 화자 유사도 구간, 샘플링 온도 및 순환 지연 버퍼를 초기화합니다."""
         self.model = model
         self.cfg = model.cfg
         self.batch_size = batch_size
@@ -84,9 +85,13 @@ class EDarchStreamingGenerator:
         use_cfg = self.cfg_coef != 1.0
         self.temporal_kv = model.temporal_transformer.init_kv_caches()
 
-        very_good_id = self.cfg.num_speaker_sim_bins - 1
+        resolved_sim_bin = (
+            self.cfg.num_speaker_sim_bins - 1
+            if sim_bin is None
+            else max(0, min(self.cfg.num_speaker_sim_bins - 1, int(sim_bin)))
+        )
         cond_bins = torch.full(
-            (batch_size,), very_good_id, dtype=torch.long, device=device
+            (batch_size,), resolved_sim_bin, dtype=torch.long, device=device
         )
         if use_cfg:
             null_bins = torch.full(

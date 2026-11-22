@@ -4,8 +4,8 @@
 torch>=2.7.0
 torchaudio>=2.7.0,<2.9.0
 soundfile>=0.12.1
+sentencepiece>=0.2.0
 
-# 선택 의존성 (SentencePiece 토크나이저 및 사전학습 Mimi 코덱 사용 시):
-# sentencepiece>=0.2.0
+# 선택 의존성 (사전학습 Mimi 코덱 및 외부 정렬/WavLM 모델 사용 시):
 # transformers>=4.45.0
 # huggingface_hub>=0.24.0

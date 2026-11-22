@@ -14,7 +14,7 @@ _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "MiniMimiCodec": ("libs.codec", "MiniMimiCodec"),
     "ExternalMimiCodec": ("libs.codec", "ExternalMimiCodec"),
     "EDarchStreamingGenerator": ("libs.streaming", "EDarchStreamingGenerator"),
-    "KoreanBPETokenizer": ("libs.tokenizer", "KoreanBPETokenizer"),
+    "train_korean_sentencepiece": ("libs.tokenizer", "train_korean_sentencepiece"),
     "load_korean_tokenizer": ("libs.tokenizer", "load_korean_tokenizer"),
 }
 

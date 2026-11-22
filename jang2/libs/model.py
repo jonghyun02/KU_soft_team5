@@ -42,6 +42,23 @@ class EDarchSequenceLogProbs:
     audio_mask: torch.Tensor
 
 
+def _mask_logits_top_k_with_targets(
+    logits: torch.Tensor,
+    top_k: int,
+    safe_targets: torch.Tensor,
+) -> torch.Tensor:
+    """Top-k 필터링을 적용하되 샘플링된 타깃 인덱스는 보존하여 수치적으로 안전한 분포를 구성합니다."""
+    vocab_dim = logits.shape[-1]
+    if top_k <= 0 or top_k >= vocab_dim:
+        return logits
+    top_vals, _ = torch.topk(logits, k=top_k, dim=-1)
+    min_keep = top_vals[..., -1:]
+    target_idx = safe_targets.unsqueeze(-1)
+    target_vals = logits.gather(dim=-1, index=target_idx)
+    masked = logits.masked_fill(logits < min_keep, float("-inf"))
+    return masked.scatter(dim=-1, index=target_idx, src=target_vals)
+
+
 class EDarchModel(nn.Module):
     """시간축 Temporal Transformer와 깊이축 Depformer를 결합한 영-한 동시통역 멀티스트림 신경망입니다."""
 
@@ -421,20 +438,47 @@ class EDarchModel(nn.Module):
         speaker_sim_bins: Optional[torch.Tensor] = None,
         temp_text: float = 1.0,
         temp_audio: float = 1.0,
+        top_k_text: int = 0,
+        top_k_audio: int = 0,
+        eos_suppress_steps: int = 0,
+        cfg_coef: float = 1.0,
     ) -> EDarchSequenceLogProbs:
-        """Stage 2 GRPO 강화학습을 위해 샘플링된 텍스트·오디오 토큰의 로그 확률을 메모리 효율적으로 추출합니다."""
+        """롤아웃 샘플링 조건(온도·Top-k·조기 EOS 억제·CFG)과 정합된 토큰 로그 확률을 추출합니다."""
         if temp_text <= 0.0 or temp_audio <= 0.0:
             raise ValueError(
                 f"temp_text({temp_text}) 및 temp_audio({temp_audio})는 양수여야 합니다."
             )
-        (
-            delayed_text_logits,
-            delayed_audio_logits,
-            dep_target_inputs,
-            dep_step_valid,
-        ) = self._forward_delayed(
-            codes, speaker_sim_bins=speaker_sim_bins, cfg_dropout_prob=0.0
-        )
+        if cfg_coef != 1.0 and speaker_sim_bins is not None:
+            (
+                cond_t_logits,
+                cond_a_logits,
+                dep_target_inputs,
+                dep_step_valid,
+            ) = self._forward_delayed(
+                codes, speaker_sim_bins=speaker_sim_bins, cfg_dropout_prob=0.0
+            )
+            null_bins = torch.full_like(speaker_sim_bins, self.speaker_cond.null_idx)
+            uncond_t_logits, uncond_a_logits, _, _ = self._forward_delayed(
+                codes, speaker_sim_bins=null_bins, cfg_dropout_prob=0.0
+            )
+            t_logits_fp32 = uncond_t_logits.float() + cfg_coef * (
+                cond_t_logits.float() - uncond_t_logits.float()
+            )
+            a_logits_fp32 = uncond_a_logits.float() + cfg_coef * (
+                cond_a_logits.float() - uncond_a_logits.float()
+            )
+        else:
+            (
+                delayed_text_logits,
+                delayed_audio_logits,
+                dep_target_inputs,
+                dep_step_valid,
+            ) = self._forward_delayed(
+                codes, speaker_sim_bins=speaker_sim_bins, cfg_dropout_prob=0.0
+            )
+            t_logits_fp32 = delayed_text_logits.float()
+            a_logits_fp32 = delayed_audio_logits.float()
+
         seq_len = codes.shape[2]
         s_idx = torch.arange(seq_len, device=codes.device).view(1, 1, seq_len)
 
@@ -448,10 +492,24 @@ class EDarchModel(nn.Module):
         safe_t_targets = torch.where(
             t_mask, t_targets_grid, torch.zeros_like(t_targets_grid)
         )
+
+        if eos_suppress_steps > 0:
+            sup_len = min(seq_len, int(eos_suppress_steps))
+            if sup_len > 0:
+                eos_slice = t_logits_fp32[:, :, :sup_len, self.cfg.text_eos_id]
+                not_eos_tgt = safe_t_targets[:, :, :sup_len] != self.cfg.text_eos_id
+                t_logits_fp32 = t_logits_fp32.clone()
+                t_logits_fp32[:, :, :sup_len, self.cfg.text_eos_id] = torch.where(
+                    not_eos_tgt,
+                    torch.full_like(eos_slice, float("-inf")),
+                    eos_slice,
+                )
+
         t_logits_scaled = (
-            delayed_text_logits.float() / temp_text
-            if temp_text != 1.0
-            else delayed_text_logits.float()
+            t_logits_fp32 / temp_text if temp_text != 1.0 else t_logits_fp32
+        )
+        t_logits_scaled = _mask_logits_top_k_with_targets(
+            t_logits_scaled, top_k=top_k_text, safe_targets=safe_t_targets
         )
         t_logp_flat = -F.cross_entropy(
             t_logits_scaled.reshape(-1, self.cfg.text_card),
@@ -476,9 +534,10 @@ class EDarchModel(nn.Module):
             a_mask, a_targets_grid, torch.zeros_like(a_targets_grid)
         )
         a_logits_scaled = (
-            delayed_audio_logits.float() / temp_audio
-            if temp_audio != 1.0
-            else delayed_audio_logits.float()
+            a_logits_fp32 / temp_audio if temp_audio != 1.0 else a_logits_fp32
+        )
+        a_logits_scaled = _mask_logits_top_k_with_targets(
+            a_logits_scaled, top_k=top_k_audio, safe_targets=safe_a_targets
         )
         a_logp_flat = -F.cross_entropy(
             a_logits_scaled.reshape(-1, self.cfg.audio_card),

@@ -1,14 +1,15 @@
-"""순수 파이썬 표준 라이브러리 기반 한국어 UTF-8 Byte-Fallback BPE 토크나이저 모듈."""
+"""SentencePiece 기반 한국어 서브워드 토크나이저 학습·로드 및 코퍼스 추출 모듈."""
 
 from __future__ import annotations
 
-import heapq
 import json
 import re
+import tempfile
 import unicodedata
-from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Protocol, Sequence, Set, Tuple
+from typing import Any, List, Optional, Protocol, Sequence, Set, Tuple
+
+import sentencepiece as spm
 
 TEXT_UNK_ID = 0
 TEXT_BOS_ID = 1
@@ -18,18 +19,14 @@ TEXT_PAD_ID = 3
 SPECIAL_TOKENS: Tuple[str, str, str, str] = ("<unk>", "<s>", "</s>", "<pad>")
 SPACE_MARKER = "\u2581"
 
-_PRETOKENIZE_RE = re.compile(
-    r"\u2581?[가-힣ㄱ-ㅎㅏ-ㅣ]+"
-    r"|\u2581?[A-Za-z]+"
-    r"|\u2581?[0-9]+"
-    r"|\u2581?[^\u2581가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+"
-    r"|\u2581+"
-)
-_BYTE_TOKEN_RE = re.compile(r"^<0x([0-9A-Fa-f]{2})>$")
+_EMPTY_TEXT_MARKERS = {"", "-", "n/a", "na", "null", "none", "x"}
+_LEADING_TRANSCRIPT_NOISE_RE = re.compile(r"^(?:##+|\*\*+|//+)\s*")
+_MAX_VOCAB_HINT_RE = re.compile(r"<=\s*(\d+)")
+_MIN_VOCAB_HINT_RE = re.compile(r"smaller than required_chars\.\s*\d+\s*vs\s*(\d+)")
 
 
 class TokenizerProtocol(Protocol):
-    """순수 파이썬 BPE 토크나이저와 SentencePiece가 공통으로 따르는 인터페이스 프로토콜입니다."""
+    """EDarch 파이프라인에서 사용하는 SentencePiece 호환 토크나이저 인터페이스 프로토콜입니다."""
 
     def EncodeAsIds(self, text: str) -> List[int]:
         """문자열을 서브워드 토큰 ID 리스트로 인코딩합니다."""
@@ -45,6 +42,14 @@ class TokenizerProtocol(Protocol):
 
     def GetPieceSize(self) -> int:
         """전체 어휘 사전 크기를 반환합니다."""
+        ...
+
+    def IdToPiece(self, idx: int) -> str:
+        """토큰 ID에 대응하는 서브워드 문자열을 반환합니다."""
+        ...
+
+    def PieceToId(self, piece: str) -> int:
+        """서브워드 문자열에 대응하는 토큰 ID를 반환합니다."""
         ...
 
     def unk_id(self) -> int:
@@ -72,547 +77,422 @@ def normalize_korean_text(text: str) -> str:
     return " ".join(norm.strip().split())
 
 
-def pretokenize_for_bpe(text: str) -> List[str]:
-    """공백을 메타스페이스로 치환한 뒤 한글·영문·숫자·기호 경계를 보존하여 사전 토큰으로 분할합니다."""
-    cleaned = normalize_korean_text(text)
-    if not cleaned:
-        return []
-    escaped = SPACE_MARKER + cleaned.replace(" ", SPACE_MARKER)
-    return _PRETOKENIZE_RE.findall(escaped)
-
-
-class KoreanBPETokenizer:
-    """외부 C++ 패키지 없이 동작하는 한국어 특화 UTF-8 Byte-Fallback BPE 서브워드 토크나이저입니다."""
-
-    FORMAT_VERSION = "edarch_py_bpe_v1"
-
-    def __init__(
-        self,
-        id_to_token: List[str],
-        merges: List[Tuple[int, int, int]],
-        byte_fallback: bool = True,
-    ):
-        """어휘 리스트와 BPE 병합 규칙으로부터 토크나이저 인스턴스를 초기화합니다."""
-        if len(id_to_token) < 4 or tuple(id_to_token[:4]) != SPECIAL_TOKENS:
-            raise ValueError(
-                f"초기 특수 토큰 ID 0..3은 {SPECIAL_TOKENS}여야 합니다: {id_to_token[:4]}"
-            )
-        self.id_to_token: List[str] = list(id_to_token)
-        self.token_to_id: Dict[str, int] = {tok: idx for idx, tok in enumerate(self.id_to_token)}
-        self.merges: List[Tuple[int, int, int]] = [
-            (int(a), int(b), int(m)) for a, b, m in merges
-        ]
-        self.merge_ranks: Dict[Tuple[int, int], Tuple[int, int]] = {
-            (a, b): (rank, merged_id)
-            for rank, (a, b, merged_id) in enumerate(self.merges)
-        }
-        self.byte_fallback = bool(byte_fallback)
-
-        self._byte_to_id: Dict[int, int] = {}
-        self._id_to_byte: Dict[int, int] = {}
-        for idx, tok in enumerate(self.id_to_token):
-            m = _BYTE_TOKEN_RE.match(tok)
-            if m:
-                b_val = int(m.group(1), 16)
-                self._byte_to_id[b_val] = idx
-                self._id_to_byte[idx] = b_val
-
-        self._word_cache: Dict[str, Tuple[int, ...]] = {}
-        self._max_cache_size = 65536
-
-    @property
-    def vocab_size(self) -> int:
-        """등록된 전체 어휘 개수를 반환합니다."""
-        return len(self.id_to_token)
-
-    @classmethod
-    def train(
-        cls,
-        sentences: Iterable[str],
-        vocab_size: int = 32000,
-        min_pair_freq: int = 2,
-        byte_fallback: bool = True,
-    ) -> "KoreanBPETokenizer":
-        """역인덱스와 지연 최대 힙을 사용하여 코퍼스로부터 BPE 어휘 사전과 병합 규칙을 학습합니다."""
-        min_required = max(TEXT_EOS_ID, TEXT_PAD_ID) + 8
-        if vocab_size < min_required:
-            raise ValueError(f"vocab_size({vocab_size})는 최소 {min_required} 이상이어야 합니다.")
-
-        pretoken_counts: Counter[str] = Counter()
-        char_counts: Counter[str] = Counter()
-        for sent in sentences:
-            ptoks = pretokenize_for_bpe(sent)
-            for pt in ptoks:
-                pretoken_counts[pt] += 1
-                for ch in pt:
-                    char_counts[ch] += 1
-
-        if not pretoken_counts:
-            raise ValueError("토크나이저 학습을 위한 유효한 문장이 비어 있습니다.")
-
-        use_bytes = bool(byte_fallback and vocab_size >= 300)
-        id_to_token: List[str] = list(SPECIAL_TOKENS)
-        token_to_id: Dict[str, int] = {tok: i for i, tok in enumerate(id_to_token)}
-
-        byte_ids: Dict[int, int] = {}
-        if use_bytes:
-            for b in range(256):
-                btok = f"<0x{b:02X}>"
-                bid = len(id_to_token)
-                id_to_token.append(btok)
-                token_to_id[btok] = bid
-                byte_ids[b] = bid
-
-        remaining_slots = vocab_size - len(id_to_token)
-        max_init_chars = (
-            max(16, int(remaining_slots * 0.65))
-            if use_bytes
-            else max(8, int(remaining_slots * 0.70))
+def resolve_spm_model_path(path: Path | str) -> Path:
+    """출력 경로에 `.model` 확장자가 없으면 자동으로 부여하여 정규화된 경로를 반환합니다."""
+    out_path = Path(path)
+    if out_path.suffix.lower() == ".json":
+        raise ValueError(
+            f"커스텀 JSON 토크나이저 포맷은 지원되지 않습니다: {out_path}. "
+            "SentencePiece 모델 파일 경로(예: ko_spm.model)를 지정하세요."
         )
-
-        sorted_chars = sorted(char_counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        if SPACE_MARKER in char_counts and SPACE_MARKER not in token_to_id:
-            token_to_id[SPACE_MARKER] = len(id_to_token)
-            id_to_token.append(SPACE_MARKER)
-
-        base_offset = 260 if use_bytes else 4
-        for ch, _ in sorted_chars:
-            if len(id_to_token) - base_offset >= max_init_chars:
-                break
-            if ch not in token_to_id:
-                token_to_id[ch] = len(id_to_token)
-                id_to_token.append(ch)
-
-        words: List[List[int]] = []
-        freqs: List[int] = []
-        for ptok, freq in pretoken_counts.items():
-            seq: List[int] = []
-            for ch in ptok:
-                tid = token_to_id.get(ch)
-                if tid is not None:
-                    seq.append(tid)
-                elif use_bytes:
-                    for b in ch.encode("utf-8"):
-                        seq.append(byte_ids[b])
-                else:
-                    seq.append(TEXT_UNK_ID)
-            if len(seq) >= 2:
-                words.append(seq)
-                freqs.append(freq)
-
-        pair_counts: Dict[Tuple[int, int], int] = defaultdict(int)
-        pair_to_words: Dict[Tuple[int, int], Set[int]] = defaultdict(set)
-
-        for w_idx, seq in enumerate(words):
-            w_freq = freqs[w_idx]
-            pc = Counter(zip(seq, seq[1:]))
-            for pair, cnt in pc.items():
-                pair_counts[pair] += cnt * w_freq
-                pair_to_words[pair].add(w_idx)
-
-        eff_min_freq = max(1, int(min_pair_freq))
-        heap: List[Tuple[int, int, int]] = [
-            (-cnt, p[0], p[1])
-            for p, cnt in pair_counts.items()
-            if cnt >= eff_min_freq
-        ]
-        heapq.heapify(heap)
-
-        merges: List[Tuple[int, int, int]] = []
-        while len(id_to_token) < vocab_size and heap:
-            neg_cnt, a, b = heapq.heappop(heap)
-            pair = (a, b)
-            actual = pair_counts.get(pair, 0)
-            if actual < eff_min_freq:
-                continue
-            if -neg_cnt != actual:
-                heapq.heappush(heap, (-actual, a, b))
-                continue
-
-            new_piece = id_to_token[a] + id_to_token[b]
-            existing_id = token_to_id.get(new_piece)
-            if existing_id is None:
-                new_id = len(id_to_token)
-                id_to_token.append(new_piece)
-                token_to_id[new_piece] = new_id
-            else:
-                new_id = existing_id
-
-            merges.append((a, b, new_id))
-
-            affected = pair_to_words.pop(pair, set())
-            pair_counts.pop(pair, None)
-            dirty_pairs: Set[Tuple[int, int]] = set()
-
-            for w_idx in affected:
-                old_seq = words[w_idx]
-                old_pc = Counter(zip(old_seq, old_seq[1:]))
-
-                new_seq: List[int] = []
-                i = 0
-                n = len(old_seq)
-                while i < n:
-                    if i + 1 < n and old_seq[i] == a and old_seq[i + 1] == b:
-                        new_seq.append(new_id)
-                        i += 2
-                    else:
-                        new_seq.append(old_seq[i])
-                        i += 1
-
-                if new_seq == old_seq:
-                    continue
-
-                words[w_idx] = new_seq
-                w_freq = freqs[w_idx]
-                new_pc = Counter(zip(new_seq, new_seq[1:]))
-
-                for p_old, c_old in old_pc.items():
-                    if p_old == pair:
-                        continue
-                    pair_counts[p_old] -= c_old * w_freq
-                    if p_old not in new_pc:
-                        pair_to_words[p_old].discard(w_idx)
-                    dirty_pairs.add(p_old)
-
-                for p_new, c_new in new_pc.items():
-                    pair_counts[p_new] += c_new * w_freq
-                    pair_to_words[p_new].add(w_idx)
-                    dirty_pairs.add(p_new)
-
-            for dp in dirty_pairs:
-                dp_cnt = pair_counts.get(dp, 0)
-                if dp_cnt >= eff_min_freq:
-                    heapq.heappush(heap, (-dp_cnt, dp[0], dp[1]))
-                elif dp_cnt <= 0:
-                    pair_counts.pop(dp, None)
-                    pair_to_words.pop(dp, None)
-
-        return cls(id_to_token=id_to_token, merges=merges, byte_fallback=use_bytes)
-
-    def _encode_pretoken(self, ptok: str) -> Tuple[int, ...]:
-        """단일 사전 토큰에 학습된 병합 우선순위를 반복 적용하고 결과를 캐싱합니다."""
-        cached = self._word_cache.get(ptok)
-        if cached is not None:
-            return cached
-
-        ids: List[int] = []
-        for ch in ptok:
-            tid = self.token_to_id.get(ch)
-            if tid is not None:
-                ids.append(tid)
-            elif self.byte_fallback and self._byte_to_id:
-                for b in ch.encode("utf-8"):
-                    ids.append(self._byte_to_id[b])
-            else:
-                ids.append(TEXT_UNK_ID)
-
-        while len(ids) >= 2:
-            best_rank = 1_000_000_000
-            best_pair: Optional[Tuple[int, int]] = None
-            best_merged_id = -1
-
-            for i in range(len(ids) - 1):
-                cand = (ids[i], ids[i + 1])
-                rank_info = self.merge_ranks.get(cand)
-                if rank_info is not None and rank_info[0] < best_rank:
-                    best_rank, best_merged_id = rank_info
-                    best_pair = cand
-
-            if best_pair is None:
-                break
-
-            pa, pb = best_pair
-            merged_ids: List[int] = []
-            i = 0
-            n = len(ids)
-            while i < n:
-                if i + 1 < n and ids[i] == pa and ids[i + 1] == pb:
-                    merged_ids.append(best_merged_id)
-                    i += 2
-                else:
-                    merged_ids.append(ids[i])
-                    i += 1
-            ids = merged_ids
-
-        out_tuple = tuple(ids)
-        if len(self._word_cache) < self._max_cache_size:
-            self._word_cache[ptok] = out_tuple
-        return out_tuple
-
-    def encode(
-        self,
-        text: str,
-        add_bos: bool = False,
-        add_eos: bool = False,
-    ) -> List[int]:
-        """문자열을 서브워드 토큰 ID 리스트로 변환합니다."""
-        out: List[int] = []
-        if add_bos:
-            out.append(TEXT_BOS_ID)
-        for ptok in pretokenize_for_bpe(text):
-            out.extend(self._encode_pretoken(ptok))
-        if add_eos:
-            out.append(TEXT_EOS_ID)
-        return out
-
-    def encode_pieces(
-        self,
-        text: str,
-        add_bos: bool = False,
-        add_eos: bool = False,
-    ) -> List[str]:
-        """문자열을 서브워드 토큰 문자열 리스트로 변환합니다."""
-        ids = self.encode(text, add_bos=add_bos, add_eos=add_eos)
-        return [self.id_to_token[i] for i in ids]
-
-    def decode(
-        self,
-        ids: Sequence[int],
-        skip_special_tokens: bool = True,
-    ) -> str:
-        """토큰 ID 시퀀스를 UTF-8 바이트 폴백까지 조합하여 원본 한국어 문자열로 복원합니다."""
-        pieces: List[str] = []
-        byte_buf = bytearray()
-
-        def _flush_bytes() -> None:
-            """누적된 바이트 폴백 토큰 버퍼를 UTF-8 문자열로 디코딩해 조각 리스트에 추가합니다."""
-            if byte_buf:
-                pieces.append(bytes(byte_buf).decode("utf-8", errors="replace"))
-                byte_buf.clear()
-
-        for raw_id in ids:
-            tid = int(raw_id)
-            if tid < 0 or tid >= len(self.id_to_token):
-                continue
-            if skip_special_tokens and tid in (
-                TEXT_UNK_ID,
-                TEXT_BOS_ID,
-                TEXT_EOS_ID,
-                TEXT_PAD_ID,
-            ):
-                _flush_bytes()
-                continue
-
-            b_val = self._id_to_byte.get(tid)
-            if b_val is not None:
-                byte_buf.append(b_val)
-            else:
-                _flush_bytes()
-                pieces.append(self.id_to_token[tid])
-
-        _flush_bytes()
-        joined = "".join(pieces)
-        if joined.startswith(SPACE_MARKER):
-            joined = joined[len(SPACE_MARKER) :]
-        return joined.replace(SPACE_MARKER, " ")
-
-    def save(self, path: Path | str) -> Path:
-        """학습된 어휘 사전과 병합 규칙을 UTF-8 JSON 파일로 저장합니다."""
-        out_path = Path(path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "format": self.FORMAT_VERSION,
-            "vocab_size": len(self.id_to_token),
-            "byte_fallback": self.byte_fallback,
-            "special_tokens": {
-                "unk_id": TEXT_UNK_ID,
-                "bos_id": TEXT_BOS_ID,
-                "eos_id": TEXT_EOS_ID,
-                "pad_id": TEXT_PAD_ID,
-            },
-            "tokens": self.id_to_token,
-            "merges": [[a, b, m] for a, b, m in self.merges],
-        }
-        out_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        return out_path
-
-    @classmethod
-    def load(cls, path: Path | str) -> "KoreanBPETokenizer":
-        """저장된 JSON 파일로부터 KoreanBPETokenizer 인스턴스를 복원합니다."""
-        in_path = Path(path)
-        raw = json.loads(in_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or raw.get("format") != cls.FORMAT_VERSION:
-            raise ValueError(f"유효한 KoreanBPETokenizer JSON 파일이 아닙니다: {in_path}")
-        tokens = [str(t) for t in raw["tokens"]]
-        merges = [(int(m[0]), int(m[1]), int(m[2])) for m in raw.get("merges", [])]
-        byte_fb = bool(raw.get("byte_fallback", True))
-        return cls(id_to_token=tokens, merges=merges, byte_fallback=byte_fb)
-
-    def Load(self, path: str) -> bool:
-        """SentencePiece 호환 방식으로 파일 경로에서 토크나이저 상태를 로드합니다."""
-        loaded = self.load(path)
-        self.__dict__.update(loaded.__dict__)
-        return True
-
-    def EncodeAsIds(self, text: str) -> List[int]:
-        """SentencePiece 호환 방식으로 문자열을 토큰 ID 리스트로 인코딩합니다."""
-        return self.encode(text, add_bos=False, add_eos=False)
-
-    def EncodeAsPieces(self, text: str) -> List[str]:
-        """SentencePiece 호환 방식으로 문자열을 서브워드 조각 리스트로 인코딩합니다."""
-        return self.encode_pieces(text, add_bos=False, add_eos=False)
-
-    def DecodeIds(self, ids: Sequence[int]) -> str:
-        """SentencePiece 호환 방식으로 토큰 ID 시퀀스를 문자열로 디코딩합니다."""
-        return self.decode(ids, skip_special_tokens=True)
-
-    def GetPieceSize(self) -> int:
-        """SentencePiece 호환 방식으로 전체 어휘 크기를 반환합니다."""
-        return len(self.id_to_token)
-
-    def IdToPiece(self, idx: int) -> str:
-        """지정된 토큰 ID에 대응하는 서브워드 문자열을 반환합니다."""
-        return self.id_to_token[idx]
-
-    def PieceToId(self, piece: str) -> int:
-        """지정된 서브워드 문자열에 대응하는 토큰 ID를 반환합니다."""
-        return self.token_to_id.get(piece, TEXT_UNK_ID)
-
-    def unk_id(self) -> int:
-        """미등록(UNK) 특수 토큰 ID(0)를 반환합니다."""
-        return TEXT_UNK_ID
-
-    def bos_id(self) -> int:
-        """문장 시작(BOS) 특수 토큰 ID(1)를 반환합니다."""
-        return TEXT_BOS_ID
-
-    def eos_id(self) -> int:
-        """문장 종료(EOS) 특수 토큰 ID(2)를 반환합니다."""
-        return TEXT_EOS_ID
-
-    def pad_id(self) -> int:
-        """패딩(PAD) 특수 토큰 ID(3)를 반환합니다."""
-        return TEXT_PAD_ID
-
-
-def is_pure_python_tokenizer_file(path: Path) -> bool:
-    """주어진 파일이 순수 파이썬 JSON 토크나이저 포맷인지 판별합니다."""
-    if path.suffix.lower() == ".json":
-        return True
-    if not path.exists():
-        return False
-    try:
-        with path.open("rb") as f:
-            head = f.read(16).lstrip()
-        return head.startswith(b"{")
-    except OSError:
-        return False
+    if out_path.suffix.lower() != ".model":
+        return Path(f"{out_path}.model")
+    return out_path
 
 
 def load_korean_tokenizer(path: Path | str) -> TokenizerProtocol:
-    """순수 파이썬 JSON 토크나이저 또는 SentencePiece 바이너리 모델을 자동 감지해 로드합니다."""
+    """SentencePiece 바이너리 `.model` 파일을 로드하고 특수 토큰 규격을 검증합니다."""
     tok_path = Path(path)
     if not tok_path.exists():
-        raise FileNotFoundError(f"토크나이저 파일을 찾을 수 없습니다: {tok_path}")
+        raise FileNotFoundError(f"SentencePiece 토크나이저 파일을 찾을 수 없습니다: {tok_path}")
 
-    if is_pure_python_tokenizer_file(tok_path):
-        return KoreanBPETokenizer.load(tok_path)
-
+    if tok_path.suffix.lower() == ".json":
+        raise ValueError(
+            f"{tok_path} 파일은 레거시 JSON 토크나이저입니다. "
+            "SentencePiece 모델(.model) 파일을 지정하거나 새로 학습하세요."
+        )
     try:
-        import sentencepiece as spm
-    except ImportError as exc:
-        raise RuntimeError(
-            f"{tok_path} 파일은 바이너리 SentencePiece 포맷이지만 sentencepiece가 설치되어 있지 않습니다. "
-            "순수 파이썬 토크나이저(.json)를 사용하거나 sentencepiece를 설치하세요."
-        ) from exc
+        with tok_path.open("rb") as f:
+            head = f.read(16).lstrip()
+        if head.startswith(b"{"):
+            raise ValueError(
+                f"{tok_path} 파일은 바이너리 SentencePiece 모델이 아닌 JSON 파일입니다. "
+                "SentencePiece 모델(.model)을 사용하세요."
+            )
+    except OSError as exc:
+        raise OSError(f"토크나이저 파일을 읽을 수 없습니다: {tok_path}") from exc
 
     proc = spm.SentencePieceProcessor()
     proc.Load(str(tok_path))
     return proc
 
 
+def train_korean_sentencepiece(
+    sentences: Sequence[str],
+    output_model_path: Path | str,
+    vocab_size: int = 32000,
+    character_coverage: float = 0.9995,
+    model_type: str = "unigram",
+    byte_fallback: bool = True,
+) -> Path:
+    """한국어 문장 코퍼스로부터 EDarch 특수 토큰 규격의 SentencePiece `.model`을 학습하고 저장 경로를 반환합니다."""
+    min_required = max(TEXT_EOS_ID, TEXT_PAD_ID) + 8
+    if vocab_size < min_required:
+        raise ValueError(f"vocab_size({vocab_size})는 최소 {min_required} 이상이어야 합니다.")
+    if model_type not in ("unigram", "bpe", "char", "word"):
+        raise ValueError(f"지원하지 않는 SentencePiece model_type입니다: {model_type}")
+
+    cleaned_lines: List[str] = []
+    for line in sentences:
+        norm_line = normalize_korean_text(line)
+        if norm_line:
+            cleaned_lines.append(norm_line)
+    if not cleaned_lines:
+        raise ValueError("SentencePiece 학습을 위한 유효한 한국어 문장이 비어 있습니다.")
+
+    final_model_path = resolve_spm_model_path(output_model_path).resolve()
+    final_model_path.parent.mkdir(parents=True, exist_ok=True)
+    model_prefix = str(final_model_path.with_suffix(""))
+
+    use_byte_fb = bool(byte_fallback and vocab_size >= 300)
+    unique_chars = len({ch for s in cleaned_lines for ch in s if not ch.isspace()})
+    base_pieces = 260 if use_byte_fb else 4
+    min_needed_vocab = base_pieces + unique_chars + 4
+
+    if vocab_size < min_needed_vocab and use_byte_fb and vocab_size < 512:
+        use_byte_fb = False
+        base_pieces = 4
+        min_needed_vocab = base_pieces + unique_chars + 4
+
+    corpus_upper = base_pieces + max(32, unique_chars * 4, len(cleaned_lines) * 4)
+    cur_vocab = min(vocab_size, max(min_needed_vocab, corpus_upper))
+    cur_vocab = max(min_required, min(vocab_size, cur_vocab))
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".txt", delete=False
+    ) as tmp_f:
+        tmp_corpus_path = Path(tmp_f.name)
+        for line in cleaned_lines:
+            tmp_f.write(line + "\n")
+
+    try:
+        for _ in range(12):
+            try:
+                spm.SentencePieceTrainer.Train(
+                    input=str(tmp_corpus_path),
+                    model_prefix=model_prefix,
+                    vocab_size=cur_vocab,
+                    character_coverage=character_coverage,
+                    model_type=model_type,
+                    byte_fallback=use_byte_fb,
+                    unk_id=TEXT_UNK_ID,
+                    bos_id=TEXT_BOS_ID,
+                    eos_id=TEXT_EOS_ID,
+                    pad_id=TEXT_PAD_ID,
+                    hard_vocab_limit=False,
+                    minloglevel=2,
+                )
+                break
+            except RuntimeError as exc:
+                msg = str(exc)
+                if "Vocabulary size too high" in msg:
+                    m_max = _MAX_VOCAB_HINT_RE.search(msg)
+                    if m_max is not None:
+                        hinted = int(m_max.group(1))
+                        if hinted < cur_vocab and hinted >= min_required:
+                            cur_vocab = hinted
+                            continue
+                    if cur_vocab > min_required:
+                        cur_vocab = max(min_required, int(cur_vocab * 0.75))
+                        continue
+                if "smaller than required_chars" in msg:
+                    m_min = _MIN_VOCAB_HINT_RE.search(msg)
+                    needed = int(m_min.group(1)) if m_min is not None else (cur_vocab + 64)
+                    if needed <= vocab_size and needed > cur_vocab:
+                        cur_vocab = needed
+                        continue
+                    if use_byte_fb:
+                        use_byte_fb = False
+                        cur_vocab = min(vocab_size, max(min_required, unique_chars + 16))
+                        continue
+                raise
+    finally:
+        try:
+            tmp_corpus_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    proc = load_korean_tokenizer(final_model_path)
+    if (
+        proc.unk_id() != TEXT_UNK_ID
+        or proc.bos_id() != TEXT_BOS_ID
+        or proc.eos_id() != TEXT_EOS_ID
+        or proc.pad_id() != TEXT_PAD_ID
+    ):
+        raise RuntimeError(
+            f"학습된 SentencePiece 특수 토큰 ID가 규격(0,1,2,3)과 다릅니다: "
+            f"unk={proc.unk_id()}, bos={proc.bos_id()}, eos={proc.eos_id()}, pad={proc.pad_id()}"
+        )
+    return final_model_path
+
+
+def _clean_text_field(val: Any) -> str:
+    """전사·번역 문자열 필드에서 노이즈 접두어를 제거하고 비어 있는 마커를 필터링합니다."""
+    if val is None or isinstance(val, bool):
+        return ""
+    text = str(val).strip()
+    text = _LEADING_TRANSCRIPT_NOISE_RE.sub("", text).strip()
+    if text.lower() in _EMPTY_TEXT_MARKERS:
+        return ""
+    return text
+
+
+def _normalize_record_keys(raw: dict[Any, Any]) -> Tuple[dict[str, Any], dict[str, Any]]:
+    """JSON 레코드 키에서 BOM과 공백을 제거한 원본 키 사전 및 소문자 키 사전을 반환합니다."""
+    norm: dict[str, Any] = {}
+    lower_norm: dict[str, Any] = {}
+    for k, v in raw.items():
+        ck = str(k).lstrip("\ufeff").strip()
+        norm[ck] = v
+        lower_norm[ck.lower()] = v
+    return norm, lower_norm
+
+
+def _extract_json_records(payload: Any) -> List[dict[str, Any]]:
+    """리스트 또는 딕셔너리 형태의 AI-Hub JSON 최상위 구조에서 레코드 목록을 추출합니다."""
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        norm, lower_norm = _normalize_record_keys(payload)
+        for list_key in ("data", "utterances", "dialogue", "dialogs", "sentences"):
+            cand = lower_norm.get(list_key)
+            if isinstance(cand, list):
+                return [x for x in cand if isinstance(x, dict)]
+        return [norm]
+    return []
+
+
+def _classify_71379_accent(t_code_raw: str, en_wav_name: str, json_name: str) -> Optional[str]:
+    """AI-Hub 71379 레코드의 언어 코드·파일명에서 미국식('us') 또는 영국식('uk') 여부를 판별합니다."""
+    tc = t_code_raw.strip().lower()
+    if tc in ("es", "es-es", "ru", "ru-ru"):
+        return None
+    if tc in ("en-gb", "uk", "en_gb"):
+        return "uk"
+    if tc in ("en-us", "en", "en_us", "eng"):
+        return "us"
+
+    lower_en = en_wav_name.lower()
+    lower_jp = json_name.lower()
+    for sfx in ("_es.wav", "_ru.wav", "_es.json", "_ru.json"):
+        if lower_en.endswith(sfx) or lower_jp.endswith(sfx):
+            return None
+    if lower_en.endswith("_uk.wav") or lower_jp.endswith("_uk.json"):
+        return "uk"
+    if lower_en.endswith("_en.wav") or lower_jp.endswith("_en.json"):
+        return "us"
+    return None
+
+
+def extract_korean_sentences_from_path(
+    input_path: Path,
+    use_mt_fallback: bool = False,
+    en_accent_71379: str = "all",
+) -> List[str]:
+    """텍스트 파일(`.txt`) 또는 AI-Hub 71693·71379 JSON 파일/디렉터리에서 한국어 문장을 추출합니다."""
+    if not input_path.exists():
+        raise FileNotFoundError(f"토크나이저 학습 입력 경로를 찾을 수 없습니다: {input_path}")
+
+    if input_path.is_file() and input_path.suffix.lower() != ".json":
+        lines = input_path.read_text(encoding="utf-8-sig").splitlines()
+        return [normalize_korean_text(ln) for ln in lines if normalize_korean_text(ln)]
+
+    json_files = [input_path] if input_path.is_file() else sorted(input_path.rglob("*.json"))
+    stt_text_by_stem: dict[str, str] = {}
+    stt_ordered_texts: List[Tuple[str, str]] = []
+    deidentified_stems: Set[str] = set()
+    trans_71379_records: List[Tuple[str, dict[str, Any]]] = []
+    direct_sentences: List[str] = []
+
+    for jf in json_files:
+        lower_jname = jf.name.lower()
+        if lower_jname.endswith(("_es.json", "_ru.json")):
+            continue
+        try:
+            payload = json.loads(jf.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        for raw_rec in _extract_json_records(payload):
+            _, item = _normalize_record_keys(raw_rec)
+
+            if (
+                "source_language" in item
+                and "target_language" in item
+                and ("audio_start" in item or "mtpe" in item or "mt" in item)
+            ):
+                src_lang = str(item.get("source_language") or "").strip().lower()
+                tgt_lang = str(item.get("target_language") or "").strip().lower()
+                if src_lang.startswith("en") and tgt_lang.startswith("ko"):
+                    ko_txt = _clean_text_field(item.get("mtpe"))
+                    if not ko_txt and use_mt_fallback:
+                        ko_txt = _clean_text_field(item.get("mt"))
+                    if ko_txt:
+                        direct_sentences.append(ko_txt)
+                continue
+
+            if "음성파일명" in item and "t-fname" not in item and "t-code" not in item:
+                ko_fname = _clean_text_field(item.get("음성파일명"))
+                stem_key = Path(ko_fname).stem.lower() if ko_fname else ""
+                is_deid = str(item.get("비식별화") or "").strip().upper() == "O"
+                if is_deid:
+                    if stem_key:
+                        deidentified_stems.add(stem_key)
+                    continue
+                stt_txt = (
+                    _clean_text_field(item.get("번역본"))
+                    or _clean_text_field(item.get("철자전사"))
+                    or _clean_text_field(item.get("발음전사"))
+                    or _clean_text_field(item.get("전사작업본"))
+                )
+                if stt_txt:
+                    if stem_key:
+                        stt_text_by_stem[stem_key] = stt_txt
+                    stt_ordered_texts.append((stem_key, stt_txt))
+                continue
+
+            if any(k in item for k in ("t-fname", "s-fname", "t-code", "최종번역문", "최종번역")):
+                trans_71379_records.append((jf.name, item))
+                continue
+
+            generic_txt = (
+                _clean_text_field(item.get("ko_mtpe"))
+                or _clean_text_field(item.get("ko"))
+                or _clean_text_field(item.get("한국어"))
+                or _clean_text_field(item.get("수정원문"))
+                or _clean_text_field(item.get("원문"))
+            )
+            if not generic_txt and use_mt_fallback:
+                generic_txt = _clean_text_field(item.get("ko_mt"))
+            if not generic_txt:
+                label_info = item.get("라벨링") or item.get("labeling")
+                if isinstance(label_info, dict):
+                    _, lower_lbl = _normalize_record_keys(label_info)
+                    generic_txt = _clean_text_field(lower_lbl.get("한국어")) or _clean_text_field(
+                        lower_lbl.get("ko")
+                    )
+            if generic_txt:
+                direct_sentences.append(generic_txt)
+
+    for jname, item in trans_71379_records:
+        s_code = str(item.get("s-code") or "ko-KR").strip().lower()
+        if s_code and not s_code.startswith("ko"):
+            continue
+        ko_wav_name = _clean_text_field(item.get("s-fname"))
+        en_wav_name = _clean_text_field(item.get("t-fname"))
+        t_code = str(item.get("t-code") or "").strip()
+        variant = _classify_71379_accent(t_code, en_wav_name, jname)
+        if variant is None:
+            continue
+        if en_accent_71379 != "all" and variant != en_accent_71379:
+            continue
+        ko_stem = Path(ko_wav_name).stem.lower() if ko_wav_name else ""
+        if ko_stem and ko_stem in deidentified_stems:
+            continue
+        if str(item.get("비식별화") or "").strip().upper() == "O":
+            continue
+        ko_txt = _clean_text_field(item.get("수정원문")) or _clean_text_field(item.get("원문"))
+        if not ko_txt and ko_stem:
+            ko_txt = stt_text_by_stem.get(ko_stem, "")
+        if ko_txt:
+            direct_sentences.append(ko_txt)
+
+    if not trans_71379_records and stt_ordered_texts:
+        for stem_key, stt_txt in stt_ordered_texts:
+            if not stem_key or stem_key not in deidentified_stems:
+                direct_sentences.append(stt_txt)
+
+    sentences: List[str] = []
+    seen: Set[str] = set()
+    for raw_sent in direct_sentences:
+        norm_sent = normalize_korean_text(raw_sent)
+        if norm_sent and norm_sent not in seen:
+            seen.add(norm_sent)
+            sentences.append(norm_sent)
+    return sentences
+
+
+def train_spm_tokenizer_from_cli(
+    input_path: Path,
+    output_path: Path,
+    vocab_size: int = 32000,
+    model_type: str = "unigram",
+    character_coverage: float = 0.9995,
+    byte_fallback: bool = True,
+    use_mt_fallback: bool = False,
+) -> Path:
+    """CLI 입력 경로에서 한국어 문장을 추출하여 SentencePiece(`.model`) 토크나이저를 학습·저장합니다."""
+    sentences = extract_korean_sentences_from_path(
+        input_path=input_path,
+        use_mt_fallback=use_mt_fallback,
+    )
+    if not sentences:
+        raise ValueError(f"입력 경로에서 유효한 한국어 문장을 찾지 못했습니다: {input_path}")
+    saved_path = train_korean_sentencepiece(
+        sentences=sentences,
+        output_model_path=output_path,
+        vocab_size=vocab_size,
+        character_coverage=character_coverage,
+        model_type=model_type,
+        byte_fallback=byte_fallback,
+    )
+    proc = load_korean_tokenizer(saved_path)
+    print(
+        f"[Done] SentencePiece 토크나이저 저장 완료: {saved_path} "
+        f"(문장 수={len(sentences)}, vocab_size={proc.GetPieceSize()}, model_type={model_type})"
+    )
+    return saved_path
+
+
 def run_tokenizer_self_test() -> None:
-    """순수 파이썬 한국어 BPE 토크나이저의 학습·인코딩·바이트 폴백·무손실 복원 무결성을 검증합니다."""
+    """한국어 SentencePiece 토크나이저의 학습·특수 토큰 규격·바이트 폴백·무손실 복원을 검증합니다."""
     sample_corpus = [
         "안녕하세요, 국제 학술대회 동시통역 시스템 테스트입니다.",
         "인공지능 기반 실시간 음성 번역 모델은 낮은 지연시간과 높은 정확도를 목표로 합니다.",
         "영어 발화가 끝나기 전에 한국어 번역 토큰과 음성을 스트리밍으로 생성합니다.",
         "실시간 동시통역에서는 문맥을 파악하며 자연스러운 한국어 어순으로 번역해야 합니다.",
         "강화학습을 통해 지연시간과 번역 품질 사이의 균형을 스스로 최적화합니다.",
-    ] * 8
+        "방송 콘텐츠와 강연 음성의 다양한 화자 특성을 반영하여 자연스럽게 발화합니다.",
+    ] * 10
 
-    tok = KoreanBPETokenizer.train(sample_corpus, vocab_size=400, min_pair_freq=2, byte_fallback=True)
-    test_sentences = [
-        "안녕하세요, 실시간 동시통역 테스트입니다!",
-        "미등록 한자(韓英)와 이모지(🚀) 및 숫자 2026도 무손실 복원됩니다.",
-    ]
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        model_path = train_korean_sentencepiece(
+            sentences=sample_corpus,
+            output_model_path=Path(tmp_dir) / "self_test_ko.model",
+            vocab_size=400,
+            model_type="unigram",
+            byte_fallback=True,
+        )
+        tok = load_korean_tokenizer(model_path)
 
-    print(f"[Self-Test] KoreanBPETokenizer 학습 완료 (vocab_size={tok.GetPieceSize()}, merges={len(tok.merges)})")
-    assert tok.unk_id() == 0 and tok.bos_id() == 1 and tok.eos_id() == 2 and tok.pad_id() == 3
+        test_sentences = [
+            "안녕하세요, 실시간 동시통역 테스트입니다!",
+            "미등록 한자(韓英)와 이모지(🚀) 및 숫자 2026도 무손실 복원됩니다.",
+        ]
 
-    for sent in test_sentences:
-        ids = tok.EncodeAsIds(sent)
-        pieces = tok.EncodeAsPieces(sent)
-        decoded = tok.DecodeIds(ids)
-        assert TEXT_UNK_ID not in ids
-        assert all(tid not in (TEXT_EOS_ID, TEXT_PAD_ID) for tid in ids)
-        assert decoded == normalize_korean_text(sent)
-        print(f"  - 원문: {sent}")
-        print(f"    서브워드({len(pieces)}개): {pieces[:12]}{' ...' if len(pieces) > 12 else ''}")
-        print(f"    복원: {decoded}")
+        print(
+            f"[Self-Test] SentencePiece 학습·로드 완료 "
+            f"(vocab_size={tok.GetPieceSize()}, path={model_path.name})"
+        )
+        assert (
+            tok.unk_id() == TEXT_UNK_ID
+            and tok.bos_id() == TEXT_BOS_ID
+            and tok.eos_id() == TEXT_EOS_ID
+            and tok.pad_id() == TEXT_PAD_ID
+        )
 
-    print("[OK] 순수 파이썬 한국어 BPE 토크나이저 무결성 검증 통과!")
+        for sent in test_sentences:
+            ids = list(tok.EncodeAsIds(sent))
+            pieces = list(tok.EncodeAsPieces(sent))
+            decoded = tok.DecodeIds(ids)
+            assert TEXT_UNK_ID not in ids
+            assert all(tid not in (TEXT_EOS_ID, TEXT_PAD_ID) for tid in ids)
+            assert normalize_korean_text(decoded) == normalize_korean_text(sent)
+            print(f"  - 원문: {sent}")
+            print(
+                f"    서브워드({len(pieces)}개): {pieces[:12]}"
+                f"{' ...' if len(pieces) > 12 else ''}"
+            )
+            print(f"    복원: {decoded}")
 
-
-def extract_korean_sentences_from_path(input_path: Path) -> List[str]:
-    """텍스트 파일(`.txt`) 또는 AI-Hub JSON 디렉터리에서 한국어 문장 목록을 추출합니다."""
-    if not input_path.exists():
-        raise FileNotFoundError(f"토크나이저 학습 입력 경로를 찾을 수 없습니다: {input_path}")
-
-    if input_path.is_file():
-        lines = input_path.read_text(encoding="utf-8").splitlines()
-        return [ln.strip() for ln in lines if ln.strip()]
-
-    sentences: List[str] = []
-    seen: Set[str] = set()
-    for jf in sorted(input_path.rglob("*.json")):
-        try:
-            raw = json.loads(jf.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        candidates: List[str] = []
-        if isinstance(raw, dict):
-            data_list = raw.get("data")
-            if isinstance(data_list, list):
-                for item in data_list:
-                    if isinstance(item, dict):
-                        txt = item.get("ko_mtpe") or item.get("ko") or item.get("ko_mt") or ""
-                        if isinstance(txt, str) and txt.strip():
-                            candidates.append(txt.strip())
-            label_info = raw.get("라벨링") or raw.get("labeling")
-            if isinstance(label_info, dict):
-                txt = label_info.get("한국어") or label_info.get("ko") or ""
-                if isinstance(txt, str) and txt.strip():
-                    candidates.append(txt.strip())
-        for c in candidates:
-            if c not in seen:
-                seen.add(c)
-                sentences.append(c)
-    return sentences
-
-
-def train_bpe_tokenizer_from_cli(
-    input_path: Path,
-    output_path: Path,
-    vocab_size: int = 32000,
-    min_freq: int = 2,
-    byte_fallback: bool = True,
-) -> Path:
-    """입력 코퍼스 경로에서 한국어 문장을 읽어 순수 파이썬 BPE 토크나이저(`.json`)를 학습·저장합니다."""
-    sentences = extract_korean_sentences_from_path(input_path)
-    if not sentences:
-        raise ValueError(f"입력 경로에서 유효한 한국어 문장을 찾지 못했습니다: {input_path}")
-    tok = KoreanBPETokenizer.train(
-        sentences=sentences,
-        vocab_size=vocab_size,
-        min_pair_freq=min_freq,
-        byte_fallback=byte_fallback,
-    )
-    saved_path = tok.save(output_path)
-    print(
-        f"[Done] 순수 파이썬 BPE 토크나이저 저장 완료: {saved_path} "
-        f"(문장 수={len(sentences)}, vocab_size={tok.GetPieceSize()}, merges={len(tok.merges)})"
-    )
-    return saved_path
+    print("[OK] 한국어 SentencePiece 토크나이저 무결성 검증 통과!")

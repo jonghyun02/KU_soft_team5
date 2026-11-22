@@ -61,11 +61,11 @@ def is_running_in_venv(venv_dir: Path) -> bool:
 
 
 def _probe_torch_backend(python_exe: Path) -> str | None:
-    """대상 파이썬 실행 파일에서 필수 오디오·딥러닝 패키지 설치 여부와 백엔드 종류를 점검합니다."""
+    """대상 파이썬 실행 파일에서 필수 오디오·토크나이저·딥러닝 패키지 설치 여부와 백엔드를 점검합니다."""
     check_imports = (
-        "import torch, torchaudio, soundfile"
+        "import torch, torchaudio, soundfile, sentencepiece"
         if REQUIREMENTS_FILE.exists()
-        else "import torch, torchaudio"
+        else "import torch, torchaudio, sentencepiece"
     )
     probe = subprocess.run(
         [
@@ -138,7 +138,14 @@ def ensure_venv_and_reexec(
         if REQUIREMENTS_FILE.exists():
             pip_cmd.extend(["-r", str(REQUIREMENTS_FILE)])
         else:
-            pip_cmd.extend(["torch>=2.7.0", "torchaudio>=2.7.0,<2.9.0", "soundfile>=0.12.1"])
+            pip_cmd.extend(
+                [
+                    "torch>=2.7.0",
+                    "torchaudio>=2.7.0,<2.9.0",
+                    "soundfile>=0.12.1",
+                    "sentencepiece>=0.2.0",
+                ]
+            )
         subprocess.run(pip_cmd, check=True)
 
     print(f"[Setup] 가상환경({venv_python})으로 스크립트 실행 전환...\n")

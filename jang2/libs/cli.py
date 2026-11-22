@@ -79,9 +79,9 @@ def build_preprocess_parser() -> argparse.ArgumentParser:
         dest="sp_model",
         type=Path,
         default=None,
-        help="한국어 토크나이저 파일 경로 (.json 순수 파이썬 BPE 또는 .model SentencePiece)",
+        help="한국어 SentencePiece 토크나이저 모델 경로 (.model)",
     )
-    parser.add_argument("--train-sp-if-missing", action="store_true", help="토크나이저 미존재 시 코퍼스에서 자동 생성")
+    parser.add_argument("--train-sp-if-missing", action="store_true", help="SentencePiece 모델 미존재 시 코퍼스에서 자동 생성")
     parser.add_argument("--mimi-model", type=str, default=None, help="사전학습 Mimi 코덱 ID 또는 로컬 경로")
     parser.add_argument("--wavlm-model", type=str, default=None, help="화자 유사도 계산용 WavLM 모델 ID")
     parser.add_argument("--demo-hooks", action="store_true", help="외부 모델 없이 합성 데모 훅으로 파이프라인 검증")
@@ -143,7 +143,7 @@ def build_grpo_parser() -> argparse.ArgumentParser:
         dest="sp_model",
         type=Path,
         default=None,
-        help="문자열 BLEU 평가용 한국어 토크나이저 경로 (.json 또는 .model)",
+        help="문자열 BLEU 평가용 한국어 SentencePiece 토크나이저 경로 (.model)",
     )
     parser.add_argument("--hooks-module", type=str, default=None, help="custom_reward_fn 제공 모듈명")
 
@@ -191,7 +191,7 @@ def build_infer_parser() -> argparse.ArgumentParser:
         dest="sp_model",
         type=Path,
         default=None,
-        help="한국어 텍스트 디코딩용 토크나이저 경로 (.json 또는 .model)",
+        help="한국어 텍스트 디코딩용 SentencePiece 토크나이저 경로 (.model)",
     )
     parser.add_argument("--input-wav", type=Path, default=None, help="입력 영어 음성 WAV 경로")
     parser.add_argument(
@@ -213,25 +213,27 @@ def build_infer_parser() -> argparse.ArgumentParser:
 
 
 def build_verify_parser() -> argparse.ArgumentParser:
-    """코어 아키텍처·토크나이저 자체 검증 및 단독 토크나이저 관리용 ArgumentParser를 반환합니다."""
-    parser = argparse.ArgumentParser(description="EDarch 코어 모델 및 순수 파이썬 토크나이저 검증·관리 도구")
+    """코어 아키텍처·SentencePiece 토크나이저 검증 및 단독 토크나이저 학습용 ArgumentParser를 반환합니다."""
+    parser = argparse.ArgumentParser(description="EDarch 코어 모델 및 한국어 SentencePiece 토크나이저 검증·관리 도구")
     add_env_cli_args(parser, include_seed=True)
 
     sub = parser.add_subparsers(dest="cmd")
 
-    p_all = sub.add_parser("all", help="토크나이저와 EDarch 신경망 아키텍처를 모두 검증")
+    p_all = sub.add_parser("all", help="SentencePiece 토크나이저와 EDarch 신경망 아키텍처를 모두 검증")
     p_all.add_argument("--preset", choices=("1b", "2b"), default="1b")
 
-    sub.add_parser("tokenizer", help="순수 파이썬 한국어 BPE 토크나이저만 단독 검증 (PyTorch 불필요)")
+    sub.add_parser("tokenizer", help="한국어 SentencePiece 토크나이저만 단독 검증")
 
     p_model = sub.add_parser("model", help="EDarchModel 초기화·역전파·스트리밍 추론 무결성 검증")
     p_model.add_argument("--preset", choices=("1b", "2b"), default="1b")
 
-    p_train_tok = sub.add_parser("train-tokenizer", help="텍스트 파일에서 순수 파이썬 BPE 토크나이저(.json) 생성")
-    p_train_tok.add_argument("--input", type=Path, required=True, help=".txt 코퍼스 파일 또는 JSON 디렉터리")
-    p_train_tok.add_argument("--output", type=Path, required=True, help="출력 .json 경로")
+    p_train_tok = sub.add_parser("train-tokenizer", help="코퍼스 또는 AI-Hub JSON에서 한국어 SentencePiece 모델(.model) 생성")
+    p_train_tok.add_argument("--input", type=Path, required=True, help=".txt 코퍼스 파일 또는 AI-Hub JSON 파일/디렉터리")
+    p_train_tok.add_argument("--output", type=Path, required=True, help="출력 SentencePiece .model 경로")
     p_train_tok.add_argument("--vocab-size", type=int, default=32000)
-    p_train_tok.add_argument("--min-freq", type=int, default=2)
+    p_train_tok.add_argument("--model-type", choices=("unigram", "bpe"), default="unigram")
+    p_train_tok.add_argument("--character-coverage", type=float, default=0.9995)
     p_train_tok.add_argument("--no-byte-fallback", action="store_true")
+    p_train_tok.add_argument("--use-mt-fallback", action="store_true", help="71693 검수 번역문 누락 시 기계번역(MT) 포함")
 
     return parser

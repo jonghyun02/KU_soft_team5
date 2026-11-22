@@ -8,7 +8,6 @@ import json
 import logging
 import operator
 import re
-import tempfile
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,12 +34,13 @@ from libs.codec import (
 from libs.config import EDarchConfig
 from libs.env import atomic_torch_save, setup_device
 from libs.tokenizer import (
-    KoreanBPETokenizer,
     TEXT_BOS_ID,
     TEXT_EOS_ID,
     TEXT_PAD_ID,
     TEXT_UNK_ID,
     load_korean_tokenizer,
+    resolve_spm_model_path,
+    train_korean_sentencepiece,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,8 +50,49 @@ DEFAULT_CONTEXT_FRAMES = 1000
 
 _EMPTY_TEXT_MARKERS = {"", "-", "n/a", "na", "null", "none", "x"}
 _LEADING_TRANSCRIPT_NOISE_RE = re.compile(r"^(?:##+|\*\*+|//+)\s*")
+_SPLIT_STEM_RE = re.compile(r"^(.*_win\d{4})(_[ab]+)$")
 
 MappingOrDict = Dict[Any, Any]
+
+
+def _index_existing_window_trees(output_dir: Path) -> Tuple[set[str], set[str]]:
+    """출력 디렉터리 내 기존 `.pt` 스템 집합과 이진 분할 상위 윈도우 스템 집합을 인덱싱합니다."""
+    existing_stems: set[str] = set()
+    split_ancestors: set[str] = set()
+    if not output_dir.exists():
+        return existing_stems, split_ancestors
+    for p in output_dir.glob("*.pt"):
+        if not p.is_file():
+            continue
+        stem = p.stem
+        existing_stems.add(stem)
+        m = _SPLIT_STEM_RE.match(stem)
+        if m is not None:
+            root_base, branch_sfx = m.group(1), m.group(2)
+            split_ancestors.add(root_base)
+            for k in range(2, len(branch_sfx)):
+                split_ancestors.add(f"{root_base}{branch_sfx[:k]}")
+    return existing_stems, split_ancestors
+
+
+def _count_completed_window_tree(
+    base_stem: str, num_items: int, existing_stems: set[str]
+) -> Optional[int]:
+    """윈도우 또는 이진 분할 하위 트리가 모두 저장되었으면 리프 파일 개수를, 미완료면 None을 반환합니다."""
+    if base_stem in existing_stems:
+        return 1
+    if num_items <= 1:
+        return None
+    mid = num_items // 2
+    left_cnt = _count_completed_window_tree(f"{base_stem}_a", mid, existing_stems)
+    if left_cnt is None:
+        return None
+    right_cnt = _count_completed_window_tree(
+        f"{base_stem}_b", num_items - mid, existing_stems
+    )
+    if right_cnt is None:
+        return None
+    return left_cnt + right_cnt
 
 
 def parse_hhmmss(ts: Union[str, int, float]) -> float:
@@ -1216,9 +1257,31 @@ def preprocess_71693_dataset(
         raise ValueError(f"{json_dir}에서 유효한 71693 en->ko 발화 레코드를 찾지 못했습니다.")
 
     wav_index, _ = _index_wav_files(wav_dir)
+    existing_stems, split_ancestors = (
+        _index_existing_window_trees(output_dir)
+        if skip_existing
+        else (set(), set())
+    )
     saved_count = 0
 
     for file_name, spans in sorted(grouped.items()):
+        windows = slice_60s_windows(
+            spans, target_window_sec=target_window_sec, max_gap_sec=max_gap_sec
+        )
+        stem = Path(file_name).stem
+        if skip_existing and windows:
+            lecture_leaf_counts = [
+                _count_completed_window_tree(
+                    f"{file_prefix}{stem}_win{w_idx:04d}",
+                    len(w_spans),
+                    existing_stems,
+                )
+                for w_idx, w_spans in enumerate(windows)
+            ]
+            if all(cnt is not None for cnt in lecture_leaf_counts):
+                saved_count += sum(cnt for cnt in lecture_leaf_counts if cnt is not None)
+                continue
+
         wav_path = _resolve_wav_path(wav_dir, file_name, wav_index)
         wav_24k: Optional[torch.Tensor] = None
         if wav_path is not None:
@@ -1233,21 +1296,26 @@ def preprocess_71693_dataset(
             continue
 
         speaker_prompt = extract_10s_speaker_prompt(wav_24k, spans, prompt_sec=10.0)
-        windows = slice_60s_windows(
-            spans, target_window_sec=target_window_sec, max_gap_sec=max_gap_sec
-        )
-        stem = Path(file_name).stem
         tts_cache: dict[str, Tuple[torch.Tensor, List[int]]] = {}
-        work_queue = deque(windows)
-        win_idx = 0
+        work_queue: deque[Tuple[str, List[UtteranceSpan]]] = deque(
+            (f"{file_prefix}{stem}_win{w_idx:04d}", w_spans)
+            for w_idx, w_spans in enumerate(windows)
+        )
 
         while work_queue:
-            win_spans = work_queue.popleft()
-            out_pt = output_dir / f"{file_prefix}{stem}_win{win_idx:04d}.pt"
-            if skip_existing and out_pt.exists() and len(win_spans) == 1:
-                win_idx += 1
-                saved_count += 1
-                continue
+            cur_stem, win_spans = work_queue.popleft()
+            if skip_existing:
+                done_leaves = _count_completed_window_tree(
+                    cur_stem, len(win_spans), existing_stems
+                )
+                if done_leaves is not None:
+                    saved_count += done_leaves
+                    continue
+                if len(win_spans) > 1 and cur_stem in split_ancestors:
+                    mid = len(win_spans) // 2
+                    work_queue.appendleft((f"{cur_stem}_b", win_spans[mid:]))
+                    work_queue.appendleft((f"{cur_stem}_a", win_spans[:mid]))
+                    continue
 
             can_split = max_context_frames > 0 and len(win_spans) > 1
             meta_dict: dict[str, Any] = {}
@@ -1283,13 +1351,14 @@ def preprocess_71693_dataset(
                     len(win_spans) - mid,
                     wav_path.name,
                 )
-                work_queue.appendleft(win_spans[mid:])
-                work_queue.appendleft(win_spans[:mid])
+                work_queue.appendleft((f"{cur_stem}_b", win_spans[mid:]))
+                work_queue.appendleft((f"{cur_stem}_a", win_spans[:mid]))
                 continue
 
+            out_pt = output_dir / f"{cur_stem}.pt"
             if not (skip_existing and out_pt.exists()):
                 save_training_example_pt(out_pt, codes, sim_bin, metadata=meta_dict)
-            win_idx += 1
+                existing_stems.add(cur_stem)
             saved_count += 1
 
     return saved_count
@@ -1394,6 +1463,11 @@ def preprocess_71379_dataset(
         raise ValueError("71379 JSON에 매칭되는 유효한 WAV 파일을 하나도 찾지 못했습니다.")
 
     speaker_prompt_cache: dict[str, torch.Tensor] = {}
+    existing_stems, split_ancestors = (
+        _index_existing_window_trees(output_dir)
+        if skip_existing
+        else (set(), set())
+    )
     saved_count = 0
 
     for group_key, triples in sorted(resolved_groups.items()):
@@ -1405,18 +1479,39 @@ def preprocess_71379_dataset(
             max_gap_sec=max_gap_sec,
             inter_utt_pause_sec=inter_utt_pause_sec,
         )
+        if skip_existing and windows:
+            group_leaf_counts = [
+                _count_completed_window_tree(
+                    f"{file_prefix}{group_key}_win{w_idx:04d}",
+                    len(w_recs),
+                    existing_stems,
+                )
+                for w_idx, w_recs in enumerate(windows)
+            ]
+            if all(cnt is not None for cnt in group_leaf_counts):
+                saved_count += sum(cnt for cnt in group_leaf_counts if cnt is not None)
+                continue
 
         clip_cache: dict[str, Tuple[torch.Tensor, torch.Tensor, List[int], bool]] = {}
-        work_queue = deque(windows)
-        win_idx = 0
+        work_queue: deque[Tuple[str, List[BroadcastUtterance71379]]] = deque(
+            (f"{file_prefix}{group_key}_win{w_idx:04d}", w_recs)
+            for w_idx, w_recs in enumerate(windows)
+        )
 
         while work_queue:
-            win_recs = work_queue.popleft()
-            out_pt = output_dir / f"{file_prefix}{group_key}_win{win_idx:04d}.pt"
-            if skip_existing and out_pt.exists() and len(win_recs) == 1:
-                win_idx += 1
-                saved_count += 1
-                continue
+            cur_stem, win_recs = work_queue.popleft()
+            if skip_existing:
+                done_leaves = _count_completed_window_tree(
+                    cur_stem, len(win_recs), existing_stems
+                )
+                if done_leaves is not None:
+                    saved_count += done_leaves
+                    continue
+                if len(win_recs) > 1 and cur_stem in split_ancestors:
+                    mid = len(win_recs) // 2
+                    work_queue.appendleft((f"{cur_stem}_b", win_recs[mid:]))
+                    work_queue.appendleft((f"{cur_stem}_a", win_recs[:mid]))
+                    continue
 
             win_en_paths = [path_by_id[r.utt_id][0] for r in win_recs]
             win_ko_paths = [path_by_id[r.utt_id][1] for r in win_recs]
@@ -1465,8 +1560,8 @@ def preprocess_71379_dataset(
             except (OSError, RuntimeError, ValueError) as exc:
                 if len(win_recs) > 1:
                     mid = len(win_recs) // 2
-                    work_queue.appendleft(win_recs[mid:])
-                    work_queue.appendleft(win_recs[:mid])
+                    work_queue.appendleft((f"{cur_stem}_b", win_recs[mid:]))
+                    work_queue.appendleft((f"{cur_stem}_a", win_recs[:mid]))
                 else:
                     logger.warning("71379 발화 변환 실패로 건너뜁니다 (%s): %s", win_recs[0].utt_id, exc)
                 continue
@@ -1481,13 +1576,14 @@ def preprocess_71379_dataset(
                     len(win_recs) - mid,
                     group_key,
                 )
-                work_queue.appendleft(win_recs[mid:])
-                work_queue.appendleft(win_recs[:mid])
+                work_queue.appendleft((f"{cur_stem}_b", win_recs[mid:]))
+                work_queue.appendleft((f"{cur_stem}_a", win_recs[:mid]))
                 continue
 
+            out_pt = output_dir / f"{cur_stem}.pt"
             if not (skip_existing and out_pt.exists()):
                 save_training_example_pt(out_pt, codes, sim_bin, metadata=meta_dict)
-            win_idx += 1
+                existing_stems.add(cur_stem)
             saved_count += 1
 
     return saved_count
@@ -1544,72 +1640,6 @@ def collect_korean_corpus(
                     sentences.append(rec.ko_text)
 
     return sentences
-
-
-def train_korean_sentencepiece(
-    sentences: Sequence[str],
-    output_model_path: Path,
-    vocab_size: int = 32000,
-    character_coverage: float = 0.9995,
-    model_type: str = "unigram",
-) -> int:
-    """외부 sentencepiece 패키지가 설치된 환경에서 EDarch 특수 토큰 규격의 `.model` 파일을 학습합니다."""
-    if not sentences:
-        raise ValueError("SentencePiece 학습을 위한 한국어 문장이 비어 있습니다.")
-    import sentencepiece as spm
-
-    output_model_path = output_model_path.resolve()
-    output_model_path.parent.mkdir(parents=True, exist_ok=True)
-    model_prefix = str(
-        output_model_path.with_suffix("")
-        if output_model_path.suffix == ".model"
-        else output_model_path
-    )
-
-    unique_chars = len({ch for s in sentences for ch in s if not ch.isspace()})
-    effective_vocab = min(vocab_size, max(32, unique_chars * 4, len(sentences) * 2))
-    effective_vocab = max(effective_vocab, max(TEXT_EOS_ID, TEXT_PAD_ID) + 8)
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".txt", delete=False
-    ) as tmp_f:
-        tmp_corpus_path = Path(tmp_f.name)
-        for line in sentences:
-            clean_line = " ".join(line.splitlines()).strip()
-            if clean_line:
-                tmp_f.write(clean_line + "\n")
-
-    try:
-        cur_vocab = effective_vocab
-        while True:
-            try:
-                spm.SentencePieceTrainer.Train(
-                    input=str(tmp_corpus_path),
-                    model_prefix=model_prefix,
-                    vocab_size=cur_vocab,
-                    character_coverage=character_coverage,
-                    model_type=model_type,
-                    unk_id=TEXT_UNK_ID,
-                    bos_id=TEXT_BOS_ID,
-                    eos_id=TEXT_EOS_ID,
-                    pad_id=TEXT_PAD_ID,
-                    hard_vocab_limit=False,
-                )
-                break
-            except RuntimeError as exc:
-                if "Vocabulary size too high" in str(exc) and cur_vocab > 32:
-                    cur_vocab = max(32, cur_vocab // 2)
-                    continue
-                raise
-    finally:
-        try:
-            tmp_corpus_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    proc = spm.SentencePieceProcessor()
-    proc.Load(f"{model_prefix}.model")
-    return int(proc.GetPieceSize())
 
 
 def _resolve_cli_tasks(
@@ -1687,10 +1717,15 @@ def run_preprocessing(args: argparse.Namespace) -> None:
     sim_fn = getattr(hooks_mod, "wavlm_sim_bin_fn", None) if hooks_mod else None
 
     if sp_fn is None and (args.sp_model is not None or args.train_sp_if_missing):
-        tok_path = (
+        raw_tok_path = (
             args.sp_model
             if args.sp_model is not None
-            else (args.output_dir / "ko_tokenizer.json")
+            else (args.output_dir / "ko_spm.model")
+        )
+        tok_path = (
+            raw_tok_path
+            if raw_tok_path.exists()
+            else resolve_spm_model_path(raw_tok_path)
         )
         if not tok_path.exists():
             if args.train_sp_if_missing:
@@ -1700,49 +1735,24 @@ def run_preprocessing(args: argparse.Namespace) -> None:
                     use_mt_fallback=args.use_mt_fallback,
                     en_accent_71379=args.en_accent_71379,
                 )
-                if tok_path.suffix.lower() == ".json":
-                    logger.info(
-                        "순수 파이썬 한국어 BPE 토크나이저(%s) 자동 학습을 시작합니다...",
-                        tok_path,
-                    )
-                    bpe_tok = KoreanBPETokenizer.train(
-                        sentences=corpus, vocab_size=cfg.text_card
-                    )
-                    bpe_tok.save(tok_path)
-                    logger.info(
-                        "순수 파이썬 BPE 토크나이저 학습 완료: %s (어휘 크기=%d)",
-                        tok_path,
-                        bpe_tok.vocab_size,
-                    )
-                else:
-                    try:
-                        logger.info(
-                            "SentencePiece 모델(%s) 자동 학습을 시작합니다...",
-                            tok_path,
-                        )
-                        trained_vocab = train_korean_sentencepiece(
-                            sentences=corpus,
-                            output_model_path=tok_path,
-                            vocab_size=cfg.text_card,
-                        )
-                        logger.info(
-                            "SentencePiece 학습 완료: %s (어휘 크기=%d)",
-                            tok_path,
-                            trained_vocab,
-                        )
-                    except ImportError:
-                        tok_path = tok_path.with_suffix(".json")
-                        logger.warning(
-                            "sentencepiece 미설치로 순수 파이썬 BPE 토크나이저(%s)로 대체 학습합니다.",
-                            tok_path,
-                        )
-                        bpe_tok = KoreanBPETokenizer.train(
-                            sentences=corpus, vocab_size=cfg.text_card
-                        )
-                        bpe_tok.save(tok_path)
+                logger.info(
+                    "SentencePiece 모델(%s) 자동 학습을 시작합니다...",
+                    tok_path,
+                )
+                tok_path = train_korean_sentencepiece(
+                    sentences=corpus,
+                    output_model_path=tok_path,
+                    vocab_size=cfg.text_card,
+                )
+                trained_proc = load_korean_tokenizer(tok_path)
+                logger.info(
+                    "SentencePiece 학습 완료: %s (어휘 크기=%d)",
+                    tok_path,
+                    trained_proc.GetPieceSize(),
+                )
             else:
                 raise FileNotFoundError(
-                    f"토크나이저 파일을 찾을 수 없습니다: {tok_path} "
+                    f"SentencePiece 토크나이저 파일을 찾을 수 없습니다: {tok_path} "
                     "(자동 생성하려면 --train-sp-if-missing 옵션을 추가하세요.)"
                 )
 
@@ -1848,7 +1858,7 @@ def run_preprocessing(args: argparse.Namespace) -> None:
         elif task_71379 is not None and task_71693 is None and fallback_real_sim_bin is None:
             fallback_real_sim_bin = cfg.num_speaker_sim_bins - 1
             logger.warning(
-                "71379 단독 전처리 시 WavLM이 지정되지 않아 추론(try.py)의 very_good_id(%d) 조건과 "
+                "71379 단독 전처리 시 WavLM이 지정되지 않아 추론(run.py)의 very_good_id(%d) 조건과 "
                 "정합되도록 sim_bin=%d로 설정합니다.",
                 fallback_real_sim_bin,
                 fallback_real_sim_bin,

@@ -50,6 +50,7 @@ class RolloutBatch:
     pred_token_frames: List[List[int]]
     eos_reached: List[bool]
     valid_lengths: List[int]
+    eos_suppress_steps: int = 0
 
 
 def _infer_source_span(
@@ -275,6 +276,7 @@ def rollout_group_trajectories(
             temp_text=temp_text,
             top_k_audio=top_k_audio,
             top_k_text=top_k_text,
+            sim_bin=prompt.sim_bin,
         )
 
         fed_src_list: List[torch.Tensor] = []
@@ -369,6 +371,7 @@ def rollout_group_trajectories(
             pred_token_frames=pred_token_frames,
             eos_reached=eos_reached_flags,
             valid_lengths=valid_lengths,
+            eos_suppress_steps=min(src_len, total_roll_t),
         )
     finally:
         if was_training:
@@ -522,10 +525,23 @@ def compute_grpo_loss(
     clip_eps: float = 0.2,
     kl_coef: float = 0.02,
     audio_pg_weight: float = 0.15,
+    temp_text: float = 1.0,
+    temp_audio: float = 1.0,
+    top_k_text: int = 0,
+    top_k_audio: int = 0,
+    eos_suppress_steps: int = 0,
+    cfg_coef: float = 1.0,
 ) -> Tuple[torch.Tensor, dict[str, float]]:
     """텍스트 및 오디오 코드북에 대한 Clipped Surrogate 정책 손실과 Schulman k3 KL 페널티를 계산합니다."""
     new_lp = policy_model.compute_token_log_probs(
-        rollout_codes, speaker_sim_bins=sim_bins
+        rollout_codes,
+        speaker_sim_bins=sim_bins,
+        temp_text=temp_text,
+        temp_audio=temp_audio,
+        top_k_text=top_k_text,
+        top_k_audio=top_k_audio,
+        eos_suppress_steps=eos_suppress_steps,
+        cfg_coef=cfg_coef,
     )
     bsz = rollout_codes.shape[0]
     adv_t = advantages.to(device=rollout_codes.device, dtype=torch.float32).view(bsz, 1, 1)
@@ -738,9 +754,6 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         return
 
     very_good_id = cfg.num_speaker_sim_bins - 1
-    cond_sim_bins = torch.full(
-        (args.group_size,), very_good_id, dtype=torch.long, device=device
-    )
     last_metrics: dict[str, float] = {}
 
     for epoch in range(start_epoch, args.epochs + 1):
@@ -781,6 +794,8 @@ def run_grpo_training(args: argparse.Namespace) -> None:
             Tuple[
                 torch.Tensor,
                 torch.Tensor,
+                int,
+                torch.Tensor,
                 EDarchSequenceLogProbs,
                 Optional[EDarchSequenceLogProbs],
             ]
@@ -788,6 +803,9 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         optimizer.zero_grad(set_to_none=True)
 
         for step, prompt in enumerate(prompt_iter, start=1):
+            prompt_sim_bins = torch.full(
+                (args.group_size,), prompt.sim_bin, dtype=torch.long, device=device
+            )
             rollout = rollout_group_trajectories(
                 model=policy_model,
                 prompt=prompt,
@@ -821,22 +839,45 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                     device_type=device.type, dtype=amp.dtype, enabled=amp.enabled
                 ):
                     old_lp = policy_model.compute_token_log_probs(
-                        rollout.rollout_codes, speaker_sim_bins=cond_sim_bins
+                        rollout.rollout_codes,
+                        speaker_sim_bins=prompt_sim_bins,
+                        temp_text=args.temp_text,
+                        temp_audio=args.temp_audio,
+                        top_k_text=args.top_k_text,
+                        top_k_audio=args.top_k_audio,
+                        eos_suppress_steps=rollout.eos_suppress_steps,
+                        cfg_coef=args.rollout_cfg_coef,
                     )
 
                 ref_lp = None
                 if ref_model is not None and args.kl_coef > 0.0:
                     ref_codes = rollout.rollout_codes.to(ref_device)
-                    ref_bins = cond_sim_bins.to(ref_device)
+                    ref_bins = prompt_sim_bins.to(ref_device)
                     use_ref_amp = amp.enabled and ref_device.type == "cuda"
                     with torch.amp.autocast(
                         device_type=ref_device.type, dtype=amp.dtype, enabled=use_ref_amp
                     ):
                         ref_lp = ref_model.compute_token_log_probs(
-                            ref_codes, speaker_sim_bins=ref_bins
+                            ref_codes,
+                            speaker_sim_bins=ref_bins,
+                            temp_text=args.temp_text,
+                            temp_audio=args.temp_audio,
+                            top_k_text=args.top_k_text,
+                            top_k_audio=args.top_k_audio,
+                            eos_suppress_steps=rollout.eos_suppress_steps,
+                            cfg_coef=args.rollout_cfg_coef,
                         )
 
-            rollout_buffer.append((rollout.rollout_codes, advantages, old_lp, ref_lp))
+            rollout_buffer.append(
+                (
+                    rollout.rollout_codes,
+                    prompt_sim_bins,
+                    rollout.eos_suppress_steps,
+                    advantages,
+                    old_lp,
+                    ref_lp,
+                )
+            )
             epoch_reward_sum += r_stats["reward_mean"]
             epoch_bleu_sum += r_stats["bleu_mean"]
             epoch_laal_sum += r_stats["laal_sec_mean"]
@@ -850,20 +891,33 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                 accum_denom = float(len(rollout_buffer))
                 for _ in range(args.ppo_epochs):
                     optimizer.zero_grad(set_to_none=True)
-                    for buf_codes, buf_adv, buf_old_lp, buf_ref_lp in rollout_buffer:
+                    for (
+                        buf_codes,
+                        buf_sim_bins,
+                        buf_eos_sup,
+                        buf_adv,
+                        buf_old_lp,
+                        buf_ref_lp,
+                    ) in rollout_buffer:
                         with torch.amp.autocast(
                             device_type=device.type, dtype=amp.dtype, enabled=amp.enabled
                         ):
                             loss, loss_metrics = compute_grpo_loss(
                                 policy_model=policy_model,
                                 rollout_codes=buf_codes,
-                                sim_bins=cond_sim_bins,
+                                sim_bins=buf_sim_bins,
                                 advantages=buf_adv,
                                 old_lp=buf_old_lp,
                                 ref_lp=buf_ref_lp,
                                 clip_eps=args.clip_eps,
                                 kl_coef=args.kl_coef,
                                 audio_pg_weight=args.audio_pg_weight,
+                                temp_text=args.temp_text,
+                                temp_audio=args.temp_audio,
+                                top_k_text=args.top_k_text,
+                                top_k_audio=args.top_k_audio,
+                                eos_suppress_steps=buf_eos_sup,
+                                cfg_coef=args.rollout_cfg_coef,
                             )
                             scaled_loss = loss / accum_denom
 

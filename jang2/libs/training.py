@@ -302,6 +302,9 @@ def run_sft_training(args: argparse.Namespace) -> None:
             batch_iter = _synthetic_batches()
 
         optimizer.zero_grad(set_to_none=True)
+        full_accum_batches = (
+            num_batches // args.grad_accum_steps
+        ) * args.grad_accum_steps
 
         for step, (codes, sim_bins) in enumerate(batch_iter, start=1):
             codes = codes.to(device, non_blocking=True)
@@ -309,8 +312,8 @@ def run_sft_training(args: argparse.Namespace) -> None:
 
             is_last_batch = step == num_batches
             accum_denom = (
-                ((num_batches - 1) % args.grad_accum_steps) + 1
-                if (is_last_batch and num_batches % args.grad_accum_steps != 0)
+                (num_batches - full_accum_batches)
+                if step > full_accum_batches
                 else args.grad_accum_steps
             )
 
