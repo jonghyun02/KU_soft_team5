@@ -33,6 +33,10 @@ def get_default_checkpoint_path() -> Path:
     return PROJECT_DIR / "checkpoints" / "EDarch_ckpt.pt"
 
 
+def get_default_grpo_checkpoint_path() -> Path:
+    return get_default_checkpoint_path().with_name("EDarch_grpo_ckpt.pt")
+
+
 def get_venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"

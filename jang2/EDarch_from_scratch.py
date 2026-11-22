@@ -751,6 +751,14 @@ class EDarchForwardOutput:
     audio_mask: torch.Tensor
 
 
+@dataclass
+class EDarchSequenceLogProbs:
+    text_log_probs: torch.Tensor
+    text_mask: torch.Tensor
+    audio_log_probs: torch.Tensor
+    audio_mask: torch.Tensor
+
+
 class EDarchModel(nn.Module):
     def __init__(self, cfg: EDarchConfig):
         super().__init__()
@@ -1110,6 +1118,84 @@ class EDarchModel(nn.Module):
             "audio_loss": float(audio_loss.detach().cpu()),
         }
         return total_loss, metrics
+
+    def compute_token_log_probs(
+        self,
+        codes: torch.Tensor,
+        speaker_sim_bins: Optional[torch.Tensor] = None,
+        temp_text: float = 1.0,
+        temp_audio: float = 1.0,
+    ) -> EDarchSequenceLogProbs:
+        if temp_text <= 0.0 or temp_audio <= 0.0:
+            raise ValueError(
+                f"temp_text({temp_text}) 및 temp_audio({temp_audio})는 양수여야 합니다."
+            )
+        (
+            delayed_text_logits,
+            delayed_audio_logits,
+            dep_target_inputs,
+            dep_step_valid,
+        ) = self._forward_delayed(
+            codes, speaker_sim_bins=speaker_sim_bins, cfg_dropout_prob=0.0
+        )
+        seq_len = codes.shape[2]
+        s_idx = torch.arange(seq_len, device=codes.device).view(1, 1, seq_len)
+
+        t_delay = self.cfg.delays[0]
+        t_targets_grid = dep_target_inputs[:, :1, :]
+        t_mask = (
+            (s_idx >= t_delay)
+            & (t_targets_grid >= 0)
+            & (t_targets_grid < self.cfg.text_card)
+        )
+        safe_t_targets = torch.where(
+            t_mask, t_targets_grid, torch.zeros_like(t_targets_grid)
+        )
+        t_logits_scaled = (
+            delayed_text_logits.float() / temp_text
+            if temp_text != 1.0
+            else delayed_text_logits.float()
+        )
+        t_logp_flat = -F.cross_entropy(
+            t_logits_scaled.reshape(-1, self.cfg.text_card),
+            safe_t_targets.reshape(-1),
+            reduction="none",
+        )
+        text_log_probs = t_logp_flat.view_as(t_targets_grid).masked_fill(~t_mask, 0.0)
+
+        audio_delays = torch.tensor(
+            self.cfg.delays[1 : 1 + self.train_dep_q],
+            device=codes.device,
+            dtype=torch.long,
+        ).view(1, self.train_dep_q, 1)
+        a_targets_grid = dep_target_inputs[:, 1 : 1 + self.train_dep_q, :]
+        a_mask = (
+            (s_idx >= audio_delays)
+            & dep_step_valid
+            & (a_targets_grid >= 0)
+            & (a_targets_grid < self.cfg.audio_card)
+        )
+        safe_a_targets = torch.where(
+            a_mask, a_targets_grid, torch.zeros_like(a_targets_grid)
+        )
+        a_logits_scaled = (
+            delayed_audio_logits.float() / temp_audio
+            if temp_audio != 1.0
+            else delayed_audio_logits.float()
+        )
+        a_logp_flat = -F.cross_entropy(
+            a_logits_scaled.reshape(-1, self.cfg.audio_card),
+            safe_a_targets.reshape(-1),
+            reduction="none",
+        )
+        audio_log_probs = a_logp_flat.view_as(a_targets_grid).masked_fill(~a_mask, 0.0)
+
+        return EDarchSequenceLogProbs(
+            text_log_probs=text_log_probs,
+            text_mask=t_mask,
+            audio_log_probs=audio_log_probs,
+            audio_mask=a_mask,
+        )
 
 
 def sample_top_k(
