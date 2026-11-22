@@ -1,0 +1,13 @@
+# Python 3.11, Windows. torch 는 CUDA 판을 먼저 따로 설치한다(setup.cmd 가 함께 처리):
+#   pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+# unbabel-comet 2.2.7 이 transformers<5, huggingface-hub<1.0, numpy<2 를 요구해서 나머지 판을 거기에 맞췄다.
+numpy<2.0
+sentencepiece>=0.2.0,<0.3.0
+transformers==4.57.3
+huggingface-hub<1.0
+sentence-transformers==5.1.2
+unbabel-comet==2.2.7
+panphon==0.22.2
+espeakng-loader==0.2.4
+tslearn
+pytest

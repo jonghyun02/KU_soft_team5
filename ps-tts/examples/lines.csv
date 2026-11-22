@@ -1,0 +1,9 @@
+﻿id,split,work_id,scene_id,source_en,prev_en,relationship,register,length_request,target_syllables,lip,draft_ko,draft_model,approved_ko,meaning_notes
+ex_001,dev,example_original,s01,You ate the last slice again?,,"룸메이트 친구끼리, 장난스럽게 따짐",반말,미지정,,on,,,,
+ex_002,dev,example_original,s02,"Excuse me, could you tell me where the nearest subway station is?",,길에서 처음 본 어른에게 길을 물음,해요체,미지정,,on,,,,
+ex_003,dev,example_original,s03,The last train to Busan leaves from platform 3 in ten minutes.,,기차역 안내 방송,하십시오체,미지정,,on,,,,
+ex_004,dev,example_original,s04,Then why didn't you call from a friend's phone?,"Sorry, Mom. My phone died.",,미지정,미지정,,on,,,,
+ex_005,dev,example_original,s05,Run!,,괴물이 나타나자 옆의 친구에게 외침,반말,짧게,,on,,,,
+ex_006,dev,example_original,s06,"I know you're scared. But if we stay here, we'll never find out what happened to her.",,후배 형사가 겁먹은 선배 형사에게,해요체,미지정,,on,,,,
+ex_007,dev,example_original,s07,"Three years later, the little bakery had become the busiest shop on the street.",,화면 밖 내레이션,미지정,여유,,off,,,,
+ex_008,dev,example_original,s08,I'm not mad at you. I'm just tired of waiting.,,약속에 또 늦은 친구에게,반말,보통,14,on,,,,화난 게 아니라 기다리다 지쳤다는 대비를 살림

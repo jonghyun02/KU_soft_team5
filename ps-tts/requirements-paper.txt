@@ -1,0 +1,34 @@
+# 논문 그대로 판(pstts.paper)이 기존 requirements.txt 위에 더 쓰는 패키지. 판은 2026-11-22 이 PC 에 설치된 판 그대로다.
+# 기존 패키지 판이 바뀌지 않게 setup_paper.cmd 가 지금 pip freeze 를 제약 파일로 만들어 -c 로 설치한다:
+#   python -m pip freeze > constraints.txt
+#   python -m pip install -c constraints.txt torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+#   python -m pip install -c constraints.txt -r requirements-paper.txt
+# 2026-11-22 이 PC(Python 3.11.9, Windows)에 위 방법으로 설치했을 때 기존 패키지는 하나도 바뀌지 않았고 52개가 더해졌다
+# (torchaudio 2.11.0+cu128 포함). 이 파일의 판은 tests/paper/test_cli.py 가 설치된 판과 같은지 확인한다.
+
+# ---- G2P (명세 3.2, 논문 3.1절)
+# 영어: phonemizer [33] 의 espeak 백엔드. espeak 라이브러리와 자료는 기존 espeakng-loader 0.2.4(espeak NG 1.52.0).
+phonemizer==3.6.0
+# 한국어: g2pK [32]. g2pK 0.9.4 가 끌어오는 것 가운데 실제로 쓰는 것을 같은 판으로 고정한다.
+g2pk==0.9.4
+python-mecab-ko==1.3.7          # g2pK 의 형태소 분석(import mecab). Windows 바퀴가 있다
+python-mecab-ko-dic==2.1.1.post2  # mecab 한국어 사전
+jamo==0.4.1                     # 발음 한글을 조합형 자모로 풀기(h2j)
+nltk==3.10.4                    # g2pK 의 영어 낱말 읽기(cmudict)
+# konlpy 0.6.0(+JPype1)은 g2pK 가 의존성으로 적어 함께 설치되지만 코드에서는 부르지 않는다.
+# nltk cmudict 자료는 pip 로 받지 않는다. setup_paper.cmd 가 .venv\nltk_data 에 받는다:
+#   python -c "import nltk, sys, os; nltk.download('cmudict', download_dir=os.path.join(sys.prefix, 'nltk_data'))"
+
+# ---- 식 (8) K-means (pstts/paper/vowel_embed.py). 기존 판 tslearn 이 이미 끌어온 판이다
+scikit-learn==1.9.1
+
+# ---- Your-TTS 프런트엔드와 학습 레시피 (명세 3.4, 3.12: pstts/paper/yourtts.py, scripts/yourtts/)
+# torchaudio 는 PyPI 판이 아니라 torch 와 같은 CUDA 판(2.11.0+cu128)을 PyTorch 색인에서 따로 설치한다(위 두 번째 명령).
+coqui-tts==0.28.0               # Vits, TTSTokenizer, SpeakerManager
+coqui-tts-trainer==0.4.0        # train_yourtts.py 의 PsTrainer 가 이 판의 Trainer 안쪽(format_batch 등)을 바꿔 쓴다
+six==1.17.0                     # coqui-tts 0.28.0 의 TTS/tts/utils/text/punctuation.py 가 부르는데 의존성에 빠져 있음
+soundfile==0.14.0               # 학습 레시피가 소리를 읽는 데 쓴다(torchaudio.load 대신)
+librosa==0.11.0                 # 학습 레시피의 샘플레이트 바꾸기(soxr_hq)
+# coqui-tts 는 torch 2.9 이상이면 torchcodec 이 설치돼 있는지 본다(TTS/__init__.py, 있는지만 봄). 0.11 은 torch 2.11 과
+# 짝인 판이다. FFmpeg 공유 DLL 이 없어 torchcodec 으로 소리를 읽을 수는 없고, 학습 레시피는 soundfile 로 읽는다.
+torchcodec==0.11.1
