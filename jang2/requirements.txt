@@ -1,0 +1,11 @@
+# CUDA 12.8 환경 설치:
+#   pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
+# torchaudio 2.9+는 TorchCodec 의존으로 load/save가 실패할 수 있어 <2.9.0으로 상한 고정
+torch>=2.7.0
+torchaudio>=2.7.0,<2.9.0
+soundfile>=0.12.1
+
+# 선택 의존성 (SentencePiece 토크나이저 및 사전학습 Mimi 코덱 사용 시):
+# sentencepiece>=0.2.0
+# transformers>=4.45.0
+# huggingface_hub>=0.24.0
