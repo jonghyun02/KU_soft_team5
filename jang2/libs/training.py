@@ -1,11 +1,12 @@
-"""Stage 1 문장 단위 지도학습(SFT) 데이터셋 로더 및 학습 루프 모듈."""
+"""Stage 1 문장 단위 지도학습(SFT) 데이터셋 로더, 검증 평가기 및 학습 루프 모듈."""
 
 from __future__ import annotations
 
 import argparse
-import math
 from dataclasses import asdict
+import math
 from pathlib import Path
+from typing import Optional
 
 import torch
 from torch.utils.data import DataLoader
@@ -15,6 +16,7 @@ from libs.config import EDarchConfig
 from libs.env import atomic_torch_save, setup_device
 from libs.model import EDarchModel, adapt_EDarch_for_korean_vocab
 from libs.optim import (
+    AMPContext,
     build_adamw_param_groups,
     build_warmup_cosine_scheduler,
     resolve_amp_context,
@@ -135,6 +137,48 @@ class CollatePad:
         return padded, sim_bins
 
 
+@torch.no_grad()
+def _evaluate_sft_validation(
+    model: EDarchModel,
+    val_loader: DataLoader,
+    device: torch.device,
+    amp: AMPContext,
+) -> dict[str, float]:
+    """검증 데이터셋에 대해 평균 SFT 손실(총합·텍스트·오디오)을 평가합니다."""
+    was_training = model.training
+    model.eval()
+    total_sum = 0.0
+    text_sum = 0.0
+    audio_sum = 0.0
+    count = 0
+    try:
+        for codes, sim_bins in val_loader:
+            codes = codes.to(device, non_blocking=True)
+            sim_bins = sim_bins.to(device, non_blocking=True)
+            with torch.amp.autocast(
+                device_type=device.type, dtype=amp.dtype, enabled=amp.enabled
+            ):
+                _, metrics = model.compute_loss(
+                    codes,
+                    speaker_sim_bins=sim_bins,
+                    cfg_dropout_prob=0.0,
+                )
+            total_sum += metrics["loss"]
+            text_sum += metrics["text_loss"]
+            audio_sum += metrics["audio_loss"]
+            count += 1
+    finally:
+        if was_training:
+            model.train()
+
+    denom = float(max(1, count))
+    return {
+        "val_loss": total_sum / denom,
+        "val_text_loss": text_sum / denom,
+        "val_audio_loss": audio_sum / denom,
+    }
+
+
 def run_sft_training(args: argparse.Namespace) -> None:
     """Stage 1 문장 단위 지도학습(SFT) 또는 파인튜닝·재개 학습 루프를 실행합니다."""
     if args.grad_accum_steps < 1:
@@ -144,18 +188,29 @@ def run_sft_training(args: argparse.Namespace) -> None:
 
     start_epoch = 1
     global_step = 0
-    resume_ckpt = None
+    best_val_loss = float("inf")
+    seen_sim_bins: set[int] = set()
+    saved_codec_state = None
+    resume_opt_state = None
+    resume_sched_state = None
+    resume_scaler_state = None
 
     if args.resume is not None:
         if not args.resume.exists():
             raise FileNotFoundError(f"--resume 체크포인트를 찾을 수 없습니다: {args.resume}")
-        print(f"[Train] 체크포인트에서 학습 재개: {args.resume}")
-        resume_ckpt = torch.load(args.resume, map_location=device, weights_only=True)
+        print(f"[Train] 체크포인트에서 학습 재개(CPU 로드 후 디바이스 이동): {args.resume}")
+        resume_ckpt = torch.load(args.resume, map_location="cpu", weights_only=True)
         cfg = EDarchConfig.from_dict(resume_ckpt["config"])
-        model = EDarchModel(cfg).to(device)
+        model = EDarchModel(cfg)
         model.load_state_dict(resume_ckpt["model_state_dict"])
+        model = model.to(device)
         start_epoch = int(resume_ckpt.get("epoch", 0)) + 1
         global_step = int(resume_ckpt.get("global_step", 0))
+        best_val_loss = float(resume_ckpt.get("best_val_loss", float("inf")))
+        for sb_val in resume_ckpt.get("seen_sim_bins", []):
+            seen_sim_bins.add(int(sb_val))
+        if "default_sim_bin" in resume_ckpt:
+            seen_sim_bins.add(int(resume_ckpt["default_sim_bin"]))
 
         saved_codec_type = resume_ckpt.get("codec_type")
         if saved_codec_type == "external_mimi" and args.data_dir is None:
@@ -168,6 +223,11 @@ def run_sft_training(args: argparse.Namespace) -> None:
                 f"[Train] WARNING: --resume 모드에서는 체크포인트의 text_card={cfg.text_card}가 "
                 f"유지되며 --ko-vocab-size={args.ko_vocab_size}는 무시됩니다."
             )
+        saved_codec_state = resume_ckpt.get("codec_state_dict")
+        resume_opt_state = resume_ckpt.get("optimizer_state_dict")
+        resume_sched_state = resume_ckpt.get("scheduler_state_dict")
+        resume_scaler_state = resume_ckpt.get("scaler_state_dict")
+        del resume_ckpt
     elif args.init_from is not None:
         if not args.init_from.exists():
             raise FileNotFoundError(f"--init-from 체크포인트를 찾을 수 없습니다: {args.init_from}")
@@ -200,15 +260,17 @@ def run_sft_training(args: argparse.Namespace) -> None:
 
     use_demo_codec = args.data_dir is None
     codec = MiniMimiCodec(cfg).to(device) if use_demo_codec else None
-    if codec is not None and resume_ckpt is not None and "codec_state_dict" in resume_ckpt:
-        codec.load_state_dict(resume_ckpt["codec_state_dict"])
+    if codec is not None and saved_codec_state is not None:
+        codec.load_state_dict(saved_codec_state)
+    saved_codec_state = None
     codec_type = "mini_demo" if use_demo_codec else "external_mimi"
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"[Train] EDarchModel 파라미터 수: {total_params:,} | codec_type={codec_type}")
 
     crop_frames = args.crop_frames if args.crop_frames is not None else cfg.context_frames
-    dataloader = None
+    dataloader: Optional[DataLoader] = None
+    val_dataloader: Optional[DataLoader] = None
     if args.data_dir is not None:
         dataset = PreprocessedPtDataset(
             data_dir=args.data_dir,
@@ -230,6 +292,28 @@ def run_sft_training(args: argparse.Namespace) -> None:
         )
         batches_per_epoch = len(dataloader)
         print(f"[Train] 전처리 데이터셋 로드 완료: {len(dataset)}개 샘플 (crop_frames={crop_frames})")
+
+        val_dir = getattr(args, "val_data_dir", None)
+        if val_dir is not None and val_dir.exists() and any(val_dir.rglob("*.pt")):
+            val_dataset = PreprocessedPtDataset(
+                data_dir=val_dir,
+                crop_frames=crop_frames,
+                expected_total_streams=cfg.total_streams,
+                text_card=cfg.text_card,
+                audio_card=cfg.audio_card,
+                default_sim_bin=cfg.num_speaker_sim_bins - 1,
+                text_eos_id=cfg.text_eos_id,
+                num_speaker_sim_bins=cfg.num_speaker_sim_bins,
+            )
+            val_dataloader = DataLoader(
+                val_dataset,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=(device.type == "cuda"),
+                collate_fn=CollatePad(pad_value=cfg.zero_token_id),
+            )
+            print(f"[Train] 검증(val) 데이터셋 로드 완료: {len(val_dataset)}개 샘플 ({val_dir})")
     else:
         batches_per_epoch = args.steps_per_epoch
         print(
@@ -250,13 +334,17 @@ def run_sft_training(args: argparse.Namespace) -> None:
     )
     amp = resolve_amp_context(device=device, no_amp=args.no_amp)
 
-    if resume_ckpt is not None:
-        if "optimizer_state_dict" in resume_ckpt:
-            optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
-        if resume_ckpt.get("scheduler_state_dict") is not None:
-            scheduler.load_state_dict(resume_ckpt["scheduler_state_dict"])
-        if resume_ckpt.get("scaler_state_dict") is not None and amp.scaler.is_enabled():
-            amp.scaler.load_state_dict(resume_ckpt["scaler_state_dict"])
+    if resume_opt_state is not None:
+        optimizer.load_state_dict(resume_opt_state)
+        del resume_opt_state
+    if resume_sched_state is not None:
+        scheduler.load_state_dict(resume_sched_state)
+        del resume_sched_state
+    if resume_scaler_state is not None and amp.scaler.is_enabled():
+        amp.scaler.load_state_dict(resume_scaler_state)
+    del resume_scaler_state
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     if start_epoch > args.epochs:
         print(f"[Train] 이미 epoch {start_epoch - 1}까지 완료되어 있습니다 (--epochs={args.epochs}).")
@@ -266,6 +354,7 @@ def run_sft_training(args: argparse.Namespace) -> None:
     if codec is not None:
         codec.eval()
     last_metrics: dict[str, float] = {}
+    best_save_path = args.save_path.with_name(f"{args.save_path.stem}_best{args.save_path.suffix}")
 
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_loss = 0.0
@@ -307,6 +396,7 @@ def run_sft_training(args: argparse.Namespace) -> None:
         ) * args.grad_accum_steps
 
         for step, (codes, sim_bins) in enumerate(batch_iter, start=1):
+            seen_sim_bins.update(int(x) for x in sim_bins.detach().cpu().tolist())
             codes = codes.to(device, non_blocking=True)
             sim_bins = sim_bins.to(device, non_blocking=True)
 
@@ -344,7 +434,7 @@ def run_sft_training(args: argparse.Namespace) -> None:
 
             epoch_loss += metrics["loss"]
             num_steps += 1
-            last_metrics = metrics
+            last_metrics = dict(metrics)
             if step == 1 or step % 5 == 0:
                 cur_lr = optimizer.param_groups[0]["lr"]
                 print(
@@ -355,11 +445,32 @@ def run_sft_training(args: argparse.Namespace) -> None:
                 )
 
         avg_loss = epoch_loss / max(1, num_steps)
-        print(f"[Epoch {epoch}/{args.epochs} 완료] avg_loss={avg_loss:.4f}")
+        val_msg = ""
+        improved_val = False
+        if val_dataloader is not None:
+            val_metrics = _evaluate_sft_validation(model, val_dataloader, device, amp)
+            last_metrics.update(val_metrics)
+            val_loss = val_metrics["val_loss"]
+            val_msg = (
+                f" | val_loss={val_loss:.4f} "
+                f"(text={val_metrics['val_text_loss']:.4f}, audio={val_metrics['val_audio_loss']:.4f})"
+            )
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                improved_val = True
 
+        print(f"[Epoch {epoch}/{args.epochs} 완료] avg_loss={avg_loss:.4f}{val_msg}")
+
+        default_sim_bin = (
+            max(seen_sim_bins) if seen_sim_bins else (cfg.num_speaker_sim_bins - 1)
+        )
         checkpoint = {
             "config": asdict(cfg),
+            "stage": "sft_stage1",
             "codec_type": codec_type,
+            "default_sim_bin": int(default_sim_bin),
+            "seen_sim_bins": sorted(seen_sim_bins),
+            "best_val_loss": best_val_loss,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
@@ -371,6 +482,9 @@ def run_sft_training(args: argparse.Namespace) -> None:
         if codec is not None:
             checkpoint["codec_state_dict"] = codec.state_dict()
         atomic_torch_save(checkpoint, args.save_path)
-        print(f"  -> 체크포인트 저장됨: {args.save_path}")
+        print(f"  -> 체크포인트 저장됨: {args.save_path} (default_sim_bin={default_sim_bin})")
+        if improved_val:
+            atomic_torch_save(checkpoint, best_save_path)
+            print(f"  -> 최고 검증 성능(val_loss={best_val_loss:.4f}) 갱신 저장됨: {best_save_path}")
 
     print(f"\n[Done] 학습 완료 (최종 체크포인트: {args.save_path})")

@@ -7,12 +7,13 @@ import re
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Any, List, Optional, Protocol, Sequence, Set, Tuple
+from typing import Any, List, Mapping, Optional, Protocol, Sequence, Set, Tuple, Union
 
 import sentencepiece as spm
 
 TEXT_UNK_ID = 0
-TEXT_BOS_ID = 1
+SPM_BOS_ID = 1
+TEXT_BOS_ID = SPM_BOS_ID  # 하위 호환 별칭 (주의: 멀티스트림 시작 토큰은 EDarchConfig.text_bos_id == text_card)
 TEXT_EOS_ID = 2
 TEXT_PAD_ID = 3
 
@@ -226,7 +227,28 @@ def train_korean_sentencepiece(
     return final_model_path
 
 
-def _clean_text_field(val: Any) -> str:
+def parse_hhmmss(ts: Union[str, int, float]) -> float:
+    """시:분:초 문자열 또는 숫자 타임스탬프를 초 단위 부동소수점 값으로 변환합니다."""
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        return float(ts)
+    if not isinstance(ts, str):
+        raise ValueError(f"타임스탬프 문자열이 아닙니다: {ts!r}")
+    cleaned = ts.strip().replace(",", ".")
+    if not cleaned:
+        raise ValueError("빈 타임스탬프입니다.")
+    parts = cleaned.split(":")
+    if len(parts) == 3:
+        h, m, s = parts
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    if len(parts) == 2:
+        m, s = parts
+        return int(m) * 60 + float(s)
+    if len(parts) == 1:
+        return float(parts[0])
+    raise ValueError(f"지원하지 않는 타임스탬프 형식입니다: {ts!r}")
+
+
+def clean_transcript_text(val: Any) -> str:
     """전사·번역 문자열 필드에서 노이즈 접두어를 제거하고 비어 있는 마커를 필터링합니다."""
     if val is None or isinstance(val, bool):
         return ""
@@ -237,7 +259,7 @@ def _clean_text_field(val: Any) -> str:
     return text
 
 
-def _normalize_record_keys(raw: dict[Any, Any]) -> Tuple[dict[str, Any], dict[str, Any]]:
+def normalize_record_keys(raw: Mapping[Any, Any]) -> Tuple[dict[str, Any], dict[str, Any]]:
     """JSON 레코드 키에서 BOM과 공백을 제거한 원본 키 사전 및 소문자 키 사전을 반환합니다."""
     norm: dict[str, Any] = {}
     lower_norm: dict[str, Any] = {}
@@ -248,12 +270,12 @@ def _normalize_record_keys(raw: dict[Any, Any]) -> Tuple[dict[str, Any], dict[st
     return norm, lower_norm
 
 
-def _extract_json_records(payload: Any) -> List[dict[str, Any]]:
+def extract_json_records(payload: Any) -> List[dict[str, Any]]:
     """리스트 또는 딕셔너리 형태의 AI-Hub JSON 최상위 구조에서 레코드 목록을 추출합니다."""
     if isinstance(payload, list):
         return [x for x in payload if isinstance(x, dict)]
     if isinstance(payload, dict):
-        norm, lower_norm = _normalize_record_keys(payload)
+        norm, lower_norm = normalize_record_keys(payload)
         for list_key in ("data", "utterances", "dialogue", "dialogs", "sentences"):
             cand = lower_norm.get(list_key)
             if isinstance(cand, list):
@@ -262,7 +284,16 @@ def _extract_json_records(payload: Any) -> List[dict[str, Any]]:
     return []
 
 
-def _classify_71379_accent(t_code_raw: str, en_wav_name: str, json_name: str) -> Optional[str]:
+def is_71693_record(lower_item: Mapping[str, Any]) -> bool:
+    """소문자 정규화된 JSON 레코드가 AI-Hub 71693(국제학술대회) 스키마인지 판별합니다."""
+    return (
+        "source_language" in lower_item
+        and "target_language" in lower_item
+        and ("audio_start" in lower_item or "mtpe" in lower_item or "mt" in lower_item)
+    )
+
+
+def classify_71379_accent(t_code_raw: str, en_wav_name: str, json_name: str) -> Optional[str]:
     """AI-Hub 71379 레코드의 언어 코드·파일명에서 미국식('us') 또는 영국식('uk') 여부를 판별합니다."""
     tc = t_code_raw.strip().lower()
     if tc in ("es", "es-es", "ru", "ru-ru"):
@@ -282,6 +313,13 @@ def _classify_71379_accent(t_code_raw: str, en_wav_name: str, json_name: str) ->
     if lower_en.endswith("_en.wav") or lower_jp.endswith("_en.json"):
         return "us"
     return None
+
+
+# 하위 호환 내부 별칭
+_clean_text_field = clean_transcript_text
+_normalize_record_keys = normalize_record_keys
+_extract_json_records = extract_json_records
+_classify_71379_accent = classify_71379_accent
 
 
 def extract_korean_sentences_from_path(

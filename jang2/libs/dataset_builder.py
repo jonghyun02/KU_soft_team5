@@ -1,23 +1,19 @@
-"""D:\\data(AI-Hub 71693) 및 D:\\data2(AI-Hub 71379) 저메모리·대용량 병렬 전처리 엔진 모듈."""
+"""AI-Hub 71693·71379 대규모 분할(Training/Validation) 저메모리 병렬 전처리 빌더 모듈."""
 
 from __future__ import annotations
 
 import argparse
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import gc
-import hashlib
 import importlib
 import json
 import logging
 import os
 from pathlib import Path
-import re
 import time
-from typing import Any, Callable, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, TypeVar
+from typing import Any, Callable, List, Optional, Sequence, Set, Tuple
 
-import soundfile as sf
 import torch
 
 from libs.alignment import (
@@ -32,14 +28,41 @@ from libs.codec import (
     MiniMimiCodec,
     SAMPLE_RATE,
     SAMPLES_PER_FRAME,
-    load_mono_wav_24k,
-    resample_wav,
 )
 from libs.config import EDarchConfig
-from libs.env import atomic_torch_save, setup_device
+from libs.env import setup_device
+from libs.preprocessing_common import (
+    ZERO_TOKEN_ID,
+    BroadcastUtterance71379,
+    UtteranceSpan,
+    assemble_multistream_example,
+    batched_pool_map,
+    build_edge_korean_tts_fn,
+    build_mms_korean_tts_fn,
+    classify_71379_accent,
+    clean_transcript_text,
+    count_completed_window_tree,
+    encode_mimi_timeline,
+    extract_prompt_24k_from_file,
+    fast_load_mono_wav_24k,
+    fast_scandir_files,
+    index_existing_window_trees,
+    interleave_lists,
+    mark_71379_segment_breaks,
+    mark_71693_segment_breaks,
+    normalize_tts_output,
+    parse_71379_scene_and_seq,
+    parse_hhmmss,
+    resolve_default_sim_bin,
+    romanize_korean_for_mms,
+    save_training_example_pt,
+    slice_71379_windows,
+    slice_71693_windows,
+    split_long_korean_text,
+    validate_ko_token_ids,
+    validate_sim_bin,
+)
 from libs.tokenizer import (
-    TEXT_EOS_ID,
-    TEXT_PAD_ID,
     load_korean_tokenizer,
     normalize_korean_text,
     resolve_spm_model_path,
@@ -48,317 +71,11 @@ from libs.tokenizer import (
 
 logger = logging.getLogger(__name__)
 
-ZERO_TOKEN_ID = -1
-_EMPTY_MARKERS = {"", "-", "n/a", "na", "null", "none", "x"}
-_LEADING_NOISE_RE = re.compile(r"^(?:##+|\*\*+|//+)\s*")
-_SENT_SPLIT_RE = re.compile(r"(?<=[.?!,;])\s+")
-
-T_In = TypeVar("T_In")
-T_Out = TypeVar("T_Out")
-
-# ==============================================================================
-# 1. 한국어 로마자 변환기 및 OOM 방지 청크형 TTS 빌더
-# ==============================================================================
-
-_CHOSEONG = (
-    "g", "kk", "n", "d", "tt", "r", "m", "b", "pp",
-    "s", "ss", "", "j", "jj", "ch", "k", "t", "p", "h",
-)
-_JUNGSEONG = (
-    "a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae",
-    "oe", "yo", "u", "wo", "we", "wi", "yu", "eu", "ui", "i",
-)
-_JONGSEONG = (
-    "", "k", "k", "ks", "n", "nj", "nh", "t", "l", "lk", "lm", "lb",
-    "ls", "lt", "lp", "lh", "m", "p", "ps", "t", "t", "ng", "t", "t",
-    "k", "t", "p", "t",
-)
-_LIAISON_NEXT_CHO: dict[int, Tuple[str, str]] = {
-    1: ("", "g"),
-    2: ("", "kk"),
-    3: ("k", "s"),
-    4: ("", "n"),
-    5: ("n", "j"),
-    6: ("n", "h"),
-    7: ("", "d"),
-    8: ("", "r"),
-    9: ("l", "g"),
-    10: ("l", "m"),
-    11: ("l", "b"),
-    12: ("l", "s"),
-    13: ("l", "t"),
-    14: ("l", "p"),
-    15: ("l", "h"),
-    16: ("", "m"),
-    17: ("", "b"),
-    18: ("b", "s"),
-    19: ("", "s"),
-    20: ("", "ss"),
-    22: ("", "j"),
-    23: ("", "ch"),
-    24: ("", "k"),
-    25: ("", "t"),
-    26: ("", "p"),
-}
-_DIGIT_KO = {
-    "0": "yeong", "1": "il", "2": "i", "3": "sam", "4": "sa",
-    "5": "o", "6": "yuk", "7": "chil", "8": "pal", "9": "gu",
-}
-_LATIN_FALLBACK = {"f": "p", "q": "k", "v": "b", "x": "ks", "z": "j"}
-_MMS_ALLOWED_CHARS = set(" '-_abcdeghijklmnoprstuwy")
-
-
-def romanize_korean_for_mms(text: str) -> str:
-    """한국어 문장을 `facebook/mms-tts-kor`의 25자 uroman 어휘에 맞춰 로마자로 변환합니다."""
-    norm = normalize_korean_text(text)
-    if not norm:
-        return "a"
-
-    syllables: List[Optional[Tuple[int, int, int]]] = []
-    raw_chars: List[str] = []
-    for ch in norm:
-        code = ord(ch)
-        if 0xAC00 <= code <= 0xD7A3:
-            idx = code - 0xAC00
-            syllables.append((idx // 588, (idx % 588) // 28, idx % 28))
-        else:
-            syllables.append(None)
-        raw_chars.append(ch)
-
-    n = len(raw_chars)
-    override_cho: dict[int, str] = {}
-    out_parts: List[str] = []
-
-    for i in range(n):
-        syl = syllables[i]
-        if syl is not None:
-            cho_i, jung_i, jong_i = syl
-            cho_str = override_cho.get(i, _CHOSEONG[cho_i])
-            jung_str = _JUNGSEONG[jung_i]
-            jong_str = _JONGSEONG[jong_i]
-
-            if jong_i in _LIAISON_NEXT_CHO and i + 1 < n and syllables[i + 1] is not None:
-                next_cho, _, _ = syllables[i + 1]
-                if next_cho == 11:
-                    rem_jong, moved_cho = _LIAISON_NEXT_CHO[jong_i]
-                    jong_str = rem_jong
-                    override_cho[i + 1] = moved_cho
-
-            out_parts.append(cho_str + jung_str + jong_str)
-            continue
-
-        ch = raw_chars[i]
-        if ch in _DIGIT_KO:
-            out_parts.append(f" {_DIGIT_KO[ch]} ")
-        elif ch == "%":
-            out_parts.append(" peosenteu ")
-        elif "a" <= ch.lower() <= "z":
-            lc = ch.lower()
-            out_parts.append(_LATIN_FALLBACK.get(lc, lc))
-        elif ch in (",", ".", "?", "!", ";", ":", "/", "(", ")"):
-            out_parts.append(" ")
-        elif ch in ("'", "-"):
-            out_parts.append(ch)
-        elif ch.isspace():
-            out_parts.append(" ")
-
-    joined = "".join(out_parts)
-    filtered = "".join(c for c in joined if c in _MMS_ALLOWED_CHARS)
-    cleaned = " ".join(filtered.split())
-    return cleaned if cleaned else "a"
-
-
-def _split_long_korean_text(text: str, max_chars: int = 140) -> List[str]:
-    """장문 한국어 발화로 인한 VITS HiFi-GAN VRAM 스파이크를 막기 위해 절 단위로 분할합니다."""
-    norm = normalize_korean_text(text)
-    if len(norm) <= max_chars:
-        return [norm] if norm else ["아"]
-
-    raw_clauses = _SENT_SPLIT_RE.split(norm)
-    chunks: List[str] = []
-    cur = ""
-    for cl in raw_clauses:
-        for word in (cl.split() if len(cl) > max_chars else [cl]):
-            cand = f"{cur} {word}".strip() if cur else word
-            if len(cand) <= max_chars:
-                cur = cand
-            else:
-                if cur:
-                    chunks.append(cur)
-                cur = word[:max_chars]
-    if cur:
-        chunks.append(cur)
-    return chunks if chunks else [norm[:max_chars]]
-
-
-def build_mms_korean_tts_fn(
-    device: torch.device,
-    model_id: str = "facebook/mms-tts-kor",
-) -> Callable[[str, torch.Tensor, str], torch.Tensor]:
-    """장문 자동 청킹이 적용된 `VitsModel`(`facebook/mms-tts-kor`) 로컬 GPU 한국어 TTS 함수를 반환합니다."""
-    from transformers import AutoTokenizer, VitsModel
-
-    logger.info("로컬 GPU 한국어 VITS TTS 모델 로드 중: %s", model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    vits = VitsModel.from_pretrained(model_id).to(device).eval()
-    tts_sr = int(getattr(vits.config, "sampling_rate", 16000))
-
-    @torch.inference_mode()
-    def _synthesize(ko_text: str, speaker_prompt_24k: torch.Tensor, gender: str = "") -> torch.Tensor:
-        del speaker_prompt_24k, gender
-        wav_pieces: List[torch.Tensor] = []
-        for sub_txt in _split_long_korean_text(ko_text, max_chars=140):
-            roman = romanize_korean_for_mms(sub_txt)
-            inputs = tokenizer(roman, return_tensors="pt")
-            input_ids = inputs["input_ids"][:, :512].to(device)
-            if input_ids.shape[-1] == 0:
-                continue
-            w = vits(input_ids=input_ids).waveform[0].detach().cpu().float().reshape(-1)
-            if w.numel() > 0:
-                wav_pieces.append(w)
-
-        if not wav_pieces:
-            return torch.zeros(SAMPLES_PER_FRAME * 2, dtype=torch.float32)
-
-        wav = torch.cat(wav_pieces, dim=0) if len(wav_pieces) > 1 else wav_pieces[0]
-        if tts_sr != SAMPLE_RATE:
-            wav = resample_wav(wav, tts_sr, SAMPLE_RATE)
-        peak = float(wav.abs().max().item())
-        if peak > 1e-4:
-            wav = wav * min(1.0, 0.9 / peak)
-        return wav
-
-    return _synthesize
-
-
-def build_edge_korean_tts_fn(
-    cache_dir: Path,
-    male_voice: str = "ko-KR-InJoonNeural",
-    female_voice: str = "ko-KR-SunHiNeural",
-) -> Callable[[str, torch.Tensor, str], torch.Tensor]:
-    """Microsoft Edge 신경망 한국어 TTS(성별 매칭 + 디스크 캐시) 함수를 생성합니다."""
-    import asyncio
-    import edge_tts
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    def _synthesize(ko_text: str, speaker_prompt_24k: torch.Tensor, gender: str = "") -> torch.Tensor:
-        del speaker_prompt_24k
-        voice = female_voice if gender.lower().startswith("f") else male_voice
-        digest = hashlib.sha1(f"{voice}:{ko_text}".encode("utf-8")).hexdigest()
-        cached_mp3 = cache_dir / f"{digest[:2]}" / f"{digest}.mp3"
-        cached_mp3.parent.mkdir(parents=True, exist_ok=True)
-
-        if not cached_mp3.exists() or cached_mp3.stat().st_size == 0:
-            async def _run_tts() -> None:
-                comm = edge_tts.Communicate(ko_text, voice)
-                await comm.save(str(cached_mp3))
-
-            for attempt in range(3):
-                try:
-                    asyncio.run(_run_tts())
-                    break
-                except Exception as exc:
-                    if attempt == 2:
-                        raise RuntimeError(f"edge-tts 합성 실패 ({ko_text[:30]}...): {exc}") from exc
-                    time.sleep(0.5 * (attempt + 1))
-
-        return load_mono_wav_24k(cached_mp3)
-
-    return _synthesize
-
-
-# ==============================================================================
-# 2. 저메모리 배치 스레드풀·오디오 슬라이스 로더·디렉터리 탐색
-# ==============================================================================
-
-
-def _batched_pool_map(
-    fn: Callable[[T_In], T_Out],
-    items: Sequence[T_In],
-    num_workers: int = 16,
-    batch_size: int = 4096,
-) -> Iterator[T_Out]:
-    """수십만 개 작업의 `Future`가 한꺼번에 RAM에 쌓이지 않도록 고정 배치 단위로 스트리밍 실행합니다."""
-    total = len(items)
-    if total == 0:
-        return
-    with ThreadPoolExecutor(max_workers=max(1, num_workers)) as pool:
-        for start in range(0, total, batch_size):
-            chunk = items[start : start + batch_size]
-            for out in pool.map(fn, chunk):
-                yield out
-
-
-def fast_load_mono_wav_24k(
-    wav_path: Path | str,
-    start_sec: Optional[float] = None,
-    end_sec: Optional[float] = None,
-) -> torch.Tensor:
-    """`soundfile`을 이용해 전체 또는 필요한 시간 구간만 부분 로드하여 RAM 사용량을 최소화합니다."""
-    path_str = str(wav_path)
-    try:
-        if start_sec is not None and end_sec is not None:
-            with sf.SoundFile(path_str, mode="r") as sfile:
-                sr = int(sfile.samplerate)
-                total_frames = len(sfile)
-                s_frame = max(0, min(int(start_sec * sr), total_frames))
-                e_frame = max(s_frame, min(int(end_sec * sr) + 1, total_frames))
-                if e_frame <= s_frame:
-                    return torch.zeros(0, dtype=torch.float32)
-                sfile.seek(s_frame)
-                data = sfile.read(e_frame - s_frame, dtype="float32", always_2d=True)
-        else:
-            data, sr = sf.read(path_str, dtype="float32", always_2d=True)
-
-        if data.size == 0:
-            return torch.zeros(0, dtype=torch.float32)
-        mono = torch.from_numpy(data.mean(axis=1) if data.shape[1] > 1 else data[:, 0])
-        if int(sr) != SAMPLE_RATE:
-            mono = resample_wav(mono, int(sr), SAMPLE_RATE)
-        return mono.contiguous()
-    except Exception:
-        full = load_mono_wav_24k(Path(path_str)).detach().cpu().float().reshape(-1)
-        if start_sec is not None and end_sec is not None:
-            s_i = max(0, min(int(start_sec * SAMPLE_RATE), full.numel()))
-            e_i = max(s_i, min(int(end_sec * SAMPLE_RATE), full.numel()))
-            return full[s_i:e_i].contiguous()
-        return full
-
-
-def _fast_scandir_files(
-    dirs: Iterable[Path],
-    suffix: str,
-) -> Tuple[dict[str, str], List[str]]:
-    """`Path` 객체 오버헤드 없이 가벼운 문자열(`str`) 경로로 대용량 디렉터리를 고속 인덱싱합니다."""
-    by_lower_name: dict[str, str] = {}
-    ordered_paths: List[str] = []
-    sfx = suffix.lower()
-
-    stack = list(reversed([str(d) for d in dirs if d is not None and d.exists()]))
-    while stack:
-        cur = stack.pop()
-        try:
-            with os.scandir(cur) as it:
-                sub_dirs: List[str] = []
-                files: List[Tuple[str, str]] = []
-                for entry in it:
-                    if entry.is_dir(follow_symlinks=False):
-                        sub_dirs.append(entry.path)
-                    elif entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(sfx):
-                        files.append((entry.name, entry.path))
-                for sd in sorted(sub_dirs, reverse=True):
-                    stack.append(sd)
-                files.sort(key=lambda pair: pair[0])
-                for fname, fpath in files:
-                    ordered_paths.append(fpath)
-                    lname = fname.lower()
-                    if lname not in by_lower_name:
-                        by_lower_name[lname] = fpath
-        except OSError as exc:
-            logger.warning("디렉터리 스캔 건너뜀 (%s): %s", cur, exc)
-
-    return by_lower_name, ordered_paths
+# 하위 호환 타입·함수 별칭
+Span71693 = UtteranceSpan
+Utterance71379 = BroadcastUtterance71379
+_encode_mimi_aligned = encode_mimi_timeline
+_split_long_korean_text = split_long_korean_text
 
 
 @dataclass
@@ -385,7 +102,7 @@ def discover_71693_splits(
     root_dir: Path,
     requested_splits: Set[str],
 ) -> Tuple[List[SplitLayout71693], List[Path]]:
-    """`D:\\data` 구조에서 Training/Validation 경로와 Sublabel 한국어 코퍼스 경로를 탐색합니다."""
+    """AI-Hub 71693 루트 구조에서 Training/Validation 경로와 Sublabel 한국어 코퍼스 경로를 탐색합니다."""
     layouts: List[SplitLayout71693] = []
     sublabel_ko_dirs: List[Path] = []
     if not root_dir.exists():
@@ -421,7 +138,7 @@ def discover_71379_splits(
     requested_splits: Set[str],
     categories: Optional[Set[str]] = None,
 ) -> List[SplitLayout71379]:
-    """`D:\\data2` 구조에서 Training/Validation의 한국어음성·발화녹음·음성전사·통번역 폴더를 분리 탐색합니다."""
+    """AI-Hub 71379 루트 구조에서 Training/Validation의 한국어음성·발화녹음·음성전사·통번역 폴더를 탐색합니다."""
     layouts: List[SplitLayout71379] = []
     if not root_dir.exists():
         return layouts
@@ -492,86 +209,12 @@ def discover_71379_splits(
     return layouts
 
 
-# ==============================================================================
-# 3. 슬림 레코드(`__slots__`) 및 저메모리 병렬 JSON 파서
-# ==============================================================================
-
-
-def _clean_str(val: Any) -> str:
-    if val is None or isinstance(val, bool):
-        return ""
-    text = _LEADING_NOISE_RE.sub("", str(val).strip()).strip()
-    return "" if text.lower() in _EMPTY_MARKERS else text
-
-
-def _parse_ts(ts: Any) -> float:
-    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
-        return float(ts)
-    cleaned = str(ts).strip().replace(",", ".")
-    parts = cleaned.split(":")
-    if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    if len(parts) == 2:
-        return int(parts[0]) * 60 + float(parts[1])
-    return float(parts[0])
-
-
-@dataclass(slots=True)
-class Span71693:
-    """`slots=True`로 메모리 오버헤드를 최소화한 AI-Hub 71693 발화 구간 데이터클래스입니다."""
-
-    sn: str
-    file_name: str
-    start_sec: float
-    end_sec: float
-    en_text: str
-    ko_text: str
-    gender: str = ""
-    segment_break: bool = False
-
-
-@dataclass(slots=True)
-class Utterance71379:
-    """`slots=True`로 40만 개 적재 시에도 수백 MB 이하만 사용하는 AI-Hub 71379 발화 레코드입니다."""
-
-    utt_id: str
-    scene_key: str
-    seq_num: int
-    variant: str
-    ko_wav_name: str
-    en_wav_name: str
-    ko_text: str
-    en_text: str
-    speaker_id: str = ""
-    s_sex: str = ""
-    t_sex: str = ""
-    s_ulength: float = 0.0
-    t_ulength: float = 0.0
-    raw_start_sec: Optional[float] = None
-    raw_end_sec: Optional[float] = None
-    segment_break: bool = False
-
-
 def _read_json_str(path_str: str) -> Optional[Any]:
     try:
         with open(path_str, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
-
-
-def _interleave_lists(groups: Sequence[Sequence[Any]]) -> List[Any]:
-    """여러 도메인·카테고리 목록을 라운드로빈으로 고르게 교차 배치합니다."""
-    non_empty = [list(g) for g in groups if g]
-    if not non_empty:
-        return []
-    max_len = max(len(g) for g in non_empty)
-    out: List[Any] = []
-    for i in range(max_len):
-        for g in non_empty:
-            if i < len(g):
-                out.append(g[i])
-    return out
 
 
 def parse_71693_split(
@@ -586,8 +229,8 @@ def parse_71693_split(
         if jd.exists():
             subs = sorted(d for d in jd.iterdir() if d.is_dir())
             domain_dirs.extend(subs if subs else [jd])
-    per_domain_jsons = [_fast_scandir_files([dd], ".json")[1] for dd in domain_dirs]
-    json_paths: List[str] = _interleave_lists(per_domain_jsons)
+    per_domain_jsons = [fast_scandir_files([dd], ".json")[1] for dd in domain_dirs]
+    json_paths: List[str] = interleave_lists(per_domain_jsons)
     if max_lectures is not None and max_lectures > 0:
         json_paths = json_paths[: max_lectures * 2]
 
@@ -595,7 +238,9 @@ def parse_71693_split(
     skipped_intervals: dict[str, List[Tuple[float, float]]] = defaultdict(list)
     seen_keys: Set[Tuple[str, str]] = set()
 
-    for payload in _batched_pool_map(_read_json_str, json_paths, num_workers=num_io_threads, batch_size=256):
+    for payload in batched_pool_map(
+        _read_json_str, json_paths, num_workers=num_io_threads, batch_size=256
+    ):
         if payload is None:
             continue
         records = payload.get("data", []) if isinstance(payload, dict) else payload
@@ -614,18 +259,18 @@ def parse_71693_split(
             if not fname or not sn or (fname, sn) in seen_keys:
                 continue
             try:
-                s_sec = _parse_ts(item["audio_start"])
-                e_sec = _parse_ts(item["audio_end"])
+                s_sec = parse_hhmmss(item["audio_start"])
+                e_sec = parse_hhmmss(item["audio_end"])
             except (KeyError, ValueError, TypeError):
                 continue
             if e_sec <= s_sec:
                 continue
             seen_keys.add((fname, sn))
 
-            ko_text = _clean_str(item.get("mtpe"))
+            ko_text = clean_transcript_text(item.get("mtpe"))
             if not ko_text and use_mt_fallback:
-                ko_text = _clean_str(item.get("mt"))
-            en_text = _clean_str(item.get("source_cleaned")) or _clean_str(
+                ko_text = clean_transcript_text(item.get("mt"))
+            en_text = clean_transcript_text(item.get("source_cleaned")) or clean_transcript_text(
                 item.get("source_original")
             )
             if not ko_text:
@@ -633,14 +278,14 @@ def parse_71693_split(
                 continue
 
             grouped[fname].append(
-                Span71693(
+                UtteranceSpan(
                     sn=sn,
                     file_name=fname,
                     start_sec=s_sec,
                     end_sec=e_sec,
                     en_text=en_text,
-                    ko_text=ko_text,
-                    gender=_clean_str(item.get("info_gender")),
+                    ko_mtpe=ko_text,
+                    gender=clean_transcript_text(item.get("info_gender")),
                 )
             )
 
@@ -651,15 +296,7 @@ def parse_71693_split(
     final_grouped: dict[str, List[Span71693]] = {}
     for fname in ordered_fnames:
         spans = grouped[fname]
-        spans.sort(key=lambda x: (x.start_sec, x.end_sec))
-        sk_list = skipped_intervals.get(fname)
-        for idx in range(1, len(spans)):
-            p_end = spans[idx - 1].end_sec
-            c_start = spans[idx].start_sec
-            if sk_list and c_start > p_end and any(
-                sk_e > p_end and sk_s < c_start for sk_s, sk_e in sk_list
-            ):
-                spans[idx].segment_break = True
+        mark_71693_segment_breaks(spans, skipped_intervals.get(fname))
         final_grouped[fname] = spans
 
     return final_grouped
@@ -669,38 +306,24 @@ def extract_sublabel_korean_sentences(
     sublabel_dirs: Sequence[Path],
     num_io_threads: int = 16,
 ) -> List[str]:
-    """`D:\\data\\Sublabel\\SbL\\1.한국어` 학술 강연 한국어 문장을 저메모리로 추출합니다."""
+    """Sublabel 한국어 학술 강연 문장을 저메모리로 추출합니다."""
     if not sublabel_dirs:
         return []
-    _, json_paths = _fast_scandir_files(sublabel_dirs, ".json")
+    _, json_paths = fast_scandir_files(sublabel_dirs, ".json")
     sentences: List[str] = []
-    for payload in _batched_pool_map(_read_json_str, json_paths, num_workers=num_io_threads, batch_size=512):
+    for payload in batched_pool_map(
+        _read_json_str, json_paths, num_workers=num_io_threads, batch_size=512
+    ):
         if not isinstance(payload, list):
             continue
         for rec in payload:
             if isinstance(rec, dict):
-                s = _clean_str(rec.get("source_sentence"))
+                s = clean_transcript_text(rec.get("source_sentence"))
                 if s:
                     sentences.append(s)
     return sentences
 
 
-def _parse_scene_and_seq(ko_wav_name: str, en_wav_name: str) -> Tuple[str, int]:
-    base = ko_wav_name or en_wav_name
-    stem = os.path.splitext(os.path.basename(base))[0]
-    for sfx in ("_en-us", "_en-gb", "_en_us", "_en_gb", "_en", "_uk"):
-        if stem.lower().endswith(sfx):
-            stem = stem[: -len(sfx)]
-            break
-    parts = stem.split("_")
-    if len(parts) >= 6 and parts[5].isdigit():
-        return "_".join(parts[:5]), int(parts[5])
-    if len(parts) >= 2 and parts[-1].isdigit():
-        return "_".join(parts[:-1]), int(parts[-1])
-    return stem, 0
-
-
-# 워커 스레드에서 반환할 10-필드 경량 튜플 타입 (원본 30키 dict 보관 대비 RAM 90% 절약)
 _SlimTransTuple = Tuple[str, str, str, str, str, str, str, str, float, float]
 
 
@@ -711,11 +334,11 @@ def parse_71379_split(
     max_utterances: Optional[int] = None,
     num_io_threads: int = 16,
 ) -> dict[str, List[Utterance71379]]:
-    """71379 통번역·음성전사 JSON을 고정 크기 배치 스트리밍으로 읽어 시스템 RAM 스파이크를 원천 차단합니다."""
+    """71379 통번역·음성전사 JSON을 고정 크기 배치 스트리밍으로 읽어 시스템 RAM 스파이크를 방지합니다."""
     t0 = time.perf_counter()
     per_cat_trans: List[List[str]] = []
     for td in layout.trans_json_dirs:
-        _, t_list = _fast_scandir_files([td], ".json")
+        _, t_list = fast_scandir_files([td], ".json")
         t_filtered = [
             p for p in t_list if not p.lower().endswith(("_es.json", "_ru.json"))
         ]
@@ -727,7 +350,7 @@ def parse_71379_split(
         per_cat_trans.append(t_filtered)
 
     block_sz = 24
-    interleaved_blocks = _interleave_lists(
+    interleaved_blocks = interleave_lists(
         [
             [grp[i : i + block_sz] for i in range(0, len(grp), block_sz)]
             for grp in per_cat_trans
@@ -738,7 +361,7 @@ def parse_71379_split(
 
     stt_index: dict[str, str] = {}
     if layout.stt_json_dirs and layout.stt_json_dirs != layout.trans_json_dirs:
-        stt_by_name, _ = _fast_scandir_files(layout.stt_json_dirs, ".json")
+        stt_by_name, _ = fast_scandir_files(layout.stt_json_dirs, ".json")
         stt_index = {os.path.splitext(k)[0]: v for k, v in stt_by_name.items()}
         del stt_by_name
 
@@ -759,43 +382,34 @@ def parse_71379_split(
         s_code = str(item.get("s-code") or "ko-KR").strip().lower()
         if s_code and not s_code.startswith("ko"):
             return None
-
-        t_code = str(item.get("t-code") or "").strip().lower()
-        en_wav_name = _clean_str(item.get("t-fname"))
-        jname_lower = os.path.basename(jpath).lower()
-        if t_code in ("es", "es-es", "ru", "ru-ru"):
-            return None
-        if t_code in ("en-gb", "uk", "en_gb") or en_wav_name.lower().endswith("_uk.wav"):
-            variant = "uk"
-        elif (
-            t_code in ("en-us", "en", "en_us", "eng")
-            or en_wav_name.lower().endswith("_en.wav")
-            or jname_lower.endswith("_en.json")
-        ):
-            variant = "us"
-        else:
+        if str(item.get("비식별화") or "").strip().upper() == "O":
             return None
 
+        t_code = str(item.get("t-code") or "").strip()
+        en_wav_name = clean_transcript_text(item.get("t-fname"))
+        variant = classify_71379_accent(t_code, en_wav_name, os.path.basename(jpath))
+        if variant is None:
+            return None
         if en_accent != "all" and variant != en_accent:
             return None
 
-        ko_wav_name = _clean_str(item.get("s-fname"))
+        ko_wav_name = clean_transcript_text(item.get("s-fname"))
         if not en_wav_name and ko_wav_name:
             stem0 = os.path.splitext(ko_wav_name)[0]
             en_wav_name = f"{stem0}{'_uk.wav' if variant == 'uk' else '_en.wav'}"
         if not en_wav_name:
             return None
 
-        ko_text = _clean_str(item.get("수정원문")) or _clean_str(item.get("원문"))
+        ko_text = clean_transcript_text(item.get("수정원문")) or clean_transcript_text(item.get("원문"))
         en_text = (
-            _clean_str(item.get("수정번역문"))
-            or _clean_str(item.get("최종번역문"))
-            or _clean_str(item.get("최종번역"))
-            or _clean_str(item.get("2차수정"))
-            or _clean_str(item.get("1차수정"))
+            clean_transcript_text(item.get("수정번역문"))
+            or clean_transcript_text(item.get("최종번역문"))
+            or clean_transcript_text(item.get("최종번역"))
+            or clean_transcript_text(item.get("2차수정"))
+            or clean_transcript_text(item.get("1차수정"))
         )
         if not en_text and use_mt_fallback:
-            en_text = _clean_str(item.get("mt"))
+            en_text = clean_transcript_text(item.get("mt"))
 
         try:
             s_ulen = max(0.0, float(item.get("s-ulength") or 0.0))
@@ -812,9 +426,9 @@ def parse_71379_split(
             en_wav_name,
             ko_text,
             en_text,
-            _clean_str(item.get("발화자id")),
-            _clean_str(item.get("s-usex")).lower(),
-            _clean_str(item.get("t-usex")).lower(),
+            clean_transcript_text(item.get("발화자id")),
+            clean_transcript_text(item.get("s-usex")).lower(),
+            clean_transcript_text(item.get("t-usex")).lower(),
             s_ulen,
             t_ulen,
         )
@@ -823,7 +437,7 @@ def parse_71379_split(
     needed_stt_stems: Set[str] = set()
 
     for idx, res in enumerate(
-        _batched_pool_map(_read_trans_slim, trans_paths, num_workers=num_io_threads, batch_size=4096),
+        batched_pool_map(_read_trans_slim, trans_paths, num_workers=num_io_threads, batch_size=4096),
         start=1,
     ):
         if idx % 100_000 == 0:
@@ -865,21 +479,22 @@ def parse_71379_split(
             item = {str(k).lstrip("\ufeff").strip().lower(): v for k, v in payload.items()}
             is_deid = str(item.get("비식별화") or "").strip().upper() == "O"
             ko_stt = (
-                _clean_str(item.get("번역본"))
-                or _clean_str(item.get("철자전사"))
-                or _clean_str(item.get("전사작업본"))
+                clean_transcript_text(item.get("번역본"))
+                or clean_transcript_text(item.get("철자전사"))
+                or clean_transcript_text(item.get("발음전사"))
+                or clean_transcript_text(item.get("전사작업본"))
             )
             raw_s: Optional[float] = None
             raw_e: Optional[float] = None
             try:
                 if item.get("원시시작") is not None and item.get("원시끝") is not None:
-                    raw_s = _parse_ts(item["원시시작"])
-                    raw_e = _parse_ts(item["원시끝"])
+                    raw_s = parse_hhmmss(item["원시시작"])
+                    raw_e = parse_hhmmss(item["원시끝"])
             except (ValueError, TypeError):
                 raw_s, raw_e = None, None
             return stem, ko_stt, raw_s, raw_e, is_deid
 
-        for stt_res in _batched_pool_map(
+        for stt_res in batched_pool_map(
             _read_stt_item, stt_targets, num_workers=num_io_threads, batch_size=4096
         ):
             if stt_res is not None:
@@ -909,7 +524,7 @@ def parse_71379_split(
             continue
         seen_utt_ids.add(utt_id.lower())
 
-        scene_key, seq_num = _parse_scene_and_seq(ko_wav_name, en_wav_name)
+        scene_key, seq_num = parse_71379_scene_and_seq(ko_wav_name, en_wav_name)
         group_key = f"{scene_key}_{variant}"
 
         ko_stem = os.path.splitext(os.path.basename(ko_wav_name))[0].lower() if ko_wav_name else ""
@@ -925,11 +540,11 @@ def parse_71379_split(
             continue
 
         grouped[group_key].append(
-            Utterance71379(
+            BroadcastUtterance71379(
                 utt_id=utt_id,
                 scene_key=scene_key,
                 seq_num=seq_num,
-                variant=variant,
+                lang_variant=variant,
                 ko_wav_name=ko_wav_name,
                 en_wav_name=en_wav_name,
                 ko_text=ko_text,
@@ -950,21 +565,7 @@ def parse_71379_split(
     del slim_items, stt_meta_map, seen_utt_ids
 
     for group_key, recs in grouped.items():
-        recs.sort(key=lambda r: (r.seq_num, r.utt_id))
-        sk = skipped_seqs.get(group_key, set())
-        for idx in range(1, len(recs)):
-            prev_r, cur_r = recs[idx - 1], recs[idx]
-            non_consec = (
-                cur_r.seq_num <= prev_r.seq_num
-                or (cur_r.seq_num - prev_r.seq_num > 1)
-                or any(prev_r.seq_num < s < cur_r.seq_num for s in sk)
-            )
-            spk_changed = bool(
-                (cur_r.speaker_id and prev_r.speaker_id and cur_r.speaker_id != prev_r.speaker_id)
-                or (cur_r.s_sex and prev_r.s_sex and cur_r.s_sex != prev_r.s_sex)
-            )
-            if non_consec or spk_changed:
-                cur_r.segment_break = True
+        mark_71379_segment_breaks(recs, skipped_seqs.get(group_key))
 
     logger.info(
         "[71379/%s] 파싱 완료: %d개 씬 그룹, %d개 유효 발화 (%.1fs)",
@@ -974,139 +575,6 @@ def parse_71379_split(
         time.perf_counter() - t0,
     )
     return grouped
-
-
-# ==============================================================================
-# 4. VRAM 안전 가드가 포함된 멀티스트림 텐서 생성 및 저장
-# ==============================================================================
-
-
-def _encode_mimi_aligned(
-    timeline_24k: torch.Tensor,
-    mimi_encode_fn: Callable[[torch.Tensor], torch.Tensor],
-    total_frames: int,
-    expected_q: int,
-) -> torch.Tensor:
-    """장시간 파형에 대해서도 VRAM 피크가 일정하도록 최대 45초 단위로 분할 인코딩한 뒤 정렬합니다."""
-    max_chunk_frames = 560  # 약 44.8초 단위로 인코딩하여 Conv1d 활성화 VRAM 상한 고정
-    max_chunk_samples = max_chunk_frames * SAMPLES_PER_FRAME
-    needed_samples = total_frames * SAMPLES_PER_FRAME
-    wav_in = timeline_24k[:needed_samples]
-
-    if wav_in.numel() <= max_chunk_samples:
-        raw_c = mimi_encode_fn(wav_in.view(1, 1, -1)).detach().cpu().long()
-        c = raw_c.squeeze(0) if (raw_c.ndim == 3 and raw_c.shape[0] == 1) else raw_c
-    else:
-        encoded_parts: List[torch.Tensor] = []
-        for s_off in range(0, wav_in.numel(), max_chunk_samples):
-            piece = wav_in[s_off : s_off + max_chunk_samples]
-            part_c = mimi_encode_fn(piece.view(1, 1, -1)).detach().cpu().long()
-            if part_c.ndim == 3 and part_c.shape[0] == 1:
-                part_c = part_c.squeeze(0)
-            encoded_parts.append(part_c)
-        c = torch.cat(encoded_parts, dim=1)
-
-    if c.ndim != 2 or c.shape[0] != expected_q:
-        raise ValueError(f"Mimi 코드북 차원 불일치: 기대 [{expected_q}, T], 실제 {tuple(c.shape)}")
-    if c.shape[1] >= total_frames:
-        return c[:, :total_frames].contiguous()
-    pad_len = total_frames - c.shape[1]
-    pad = (
-        c[:, -1:].expand(expected_q, pad_len).contiguous()
-        if c.shape[1] > 0
-        else torch.full((expected_q, pad_len), ZERO_TOKEN_ID, dtype=torch.long)
-    )
-    return torch.cat([c, pad], dim=1)
-
-
-def _slice_71693_windows(
-    spans: List[Span71693],
-    target_window_sec: float = 35.0,
-    max_gap_sec: float = 8.0,
-) -> List[List[Span71693]]:
-    windows: List[List[Span71693]] = []
-    cur: List[Span71693] = []
-    cur_end = 0.0
-    for sp in spans:
-        if not cur:
-            cur = [sp]
-            cur_end = sp.end_sec
-            continue
-        gap = sp.start_sec - cur_end
-        win_len = max(cur_end, sp.end_sec) - cur[0].start_sec
-        if sp.segment_break or gap > max_gap_sec or win_len > target_window_sec:
-            windows.append(cur)
-            cur = [sp]
-            cur_end = sp.end_sec
-        else:
-            cur.append(sp)
-            cur_end = max(cur_end, sp.end_sec)
-    if cur:
-        windows.append(cur)
-    return windows
-
-
-def _slice_71379_windows(
-    records: List[Utterance71379],
-    target_window_sec: float = 35.0,
-    max_gap_sec: float = 8.0,
-    inter_utt_pause_sec: float = 0.5,
-) -> List[List[Utterance71379]]:
-    windows: List[List[Utterance71379]] = []
-    cur: List[Utterance71379] = []
-    cur_est = 0.0
-    for rec in records:
-        est_dur = max(rec.t_ulength, rec.s_ulength, 2.5)
-        if not cur:
-            cur = [rec]
-            cur_est = est_dur
-            continue
-        prev = cur[-1]
-        raw_gap: Optional[float] = None
-        if prev.raw_end_sec is not None and rec.raw_start_sec is not None:
-            raw_gap = rec.raw_start_sec - prev.raw_end_sec
-        gap_exceeded = raw_gap is not None and (raw_gap < -0.5 or raw_gap > max_gap_sec)
-        pause = (
-            min(max(raw_gap, inter_utt_pause_sec), max_gap_sec)
-            if (raw_gap is not None and raw_gap >= 0.0)
-            else inter_utt_pause_sec
-        )
-        if rec.segment_break or gap_exceeded or (cur_est + pause + est_dur) > target_window_sec:
-            windows.append(cur)
-            cur = [rec]
-            cur_est = est_dur
-        else:
-            cur.append(rec)
-            cur_est += pause + est_dur
-    if cur:
-        windows.append(cur)
-    return windows
-
-
-def _extract_prompt_24k_from_file(wav_path: str, spans: List[Span71693]) -> torch.Tensor:
-    target = 10 * SAMPLE_RATE
-    chunks: List[torch.Tensor] = []
-    acc = 0
-    for sp in spans[:12]:
-        if sp.end_sec - sp.start_sec > 0.5:
-            clip = fast_load_mono_wav_24k(wav_path, start_sec=sp.start_sec, end_sec=sp.end_sec)
-            if clip.numel() > 0:
-                chunks.append(clip)
-                acc += clip.numel()
-                if acc >= target:
-                    break
-    if chunks:
-        return torch.cat(chunks, dim=0)[:target]
-    fallback = fast_load_mono_wav_24k(wav_path, start_sec=0.0, end_sec=10.0)
-    return fallback[:target] if fallback.numel() > 0 else torch.zeros(target, dtype=torch.float32)
-
-
-def _window_already_saved(existing_names: Set[str], stem_prefix: str) -> int:
-    exact = f"{stem_prefix}.pt"
-    if exact in existing_names:
-        return 1
-    part_prefix = f"{stem_prefix}_p"
-    return sum(1 for name in existing_names if name.startswith(part_prefix) and name.endswith(".pt"))
 
 
 def _maybe_release_memory(saved_count: int, device: torch.device) -> None:
@@ -1136,15 +604,21 @@ def process_71693_to_pt(
     skip_existing: bool = True,
     max_samples: Optional[int] = None,
 ) -> int:
-    """145MB 전체 강의 WAV를 통째로 올리지 않고 윈도우 구간만 부분 Seek 로드하여 RAM을 절약합니다."""
+    """전체 강의 WAV를 통째로 메모리에 올리지 않고 윈도우 구간만 부분 Seek 로드하여 `.pt`로 저장합니다."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    wav_index, _ = _fast_scandir_files(wav_dirs, ".wav")
-    existing_names = {p.name for p in output_dir.glob("*.pt")} if skip_existing else set()
+    wav_index, _ = fast_scandir_files(wav_dirs, ".wav")
+    existing_stems, split_ancestors = (
+        index_existing_window_trees(output_dir) if skip_existing else (set(), set())
+    )
 
     saved_count = 0
     t0 = time.perf_counter()
     total_lectures = len(grouped)
     hard_max_frames = cfg.context_frames if cfg.context_frames > 0 else 1000
+    mask_target = ko_mode_71693 == "text-only"
+    audio_src_tag = (
+        ko_mode_71693 if ko_mode_71693 in ("mms", "edge-tts", "text-only") else "cloned_tts"
+    )
 
     for lec_idx, (fname, spans) in enumerate(grouped.items(), start=1):
         if max_samples is not None and saved_count >= max_samples:
@@ -1157,25 +631,30 @@ def process_71693_to_pt(
             logger.warning("[71693] 원천 영어 WAV 누락으로 건너뜀: %s", fname)
             continue
 
-        windows = _slice_71693_windows(
+        windows = slice_71693_windows(
             spans, target_window_sec=target_window_sec, max_gap_sec=max_gap_sec
         )
         lec_stem = os.path.splitext(os.path.basename(fname))[0]
 
         if skip_existing and windows:
             existing_hits = [
-                _window_already_saved(existing_names, f"71693_{lec_stem}_w{w_i:04d}")
-                for w_i in range(len(windows))
+                count_completed_window_tree(
+                    f"71693_{lec_stem}_w{w_i:04d}",
+                    len(w_spans),
+                    existing_stems,
+                    branch_tags=("_p0", "_p1"),
+                )
+                for w_i, w_spans in enumerate(windows)
             ]
-            if all(h > 0 for h in existing_hits):
-                saved_count += sum(existing_hits)
+            if all(h is not None for h in existing_hits):
+                saved_count += sum(h for h in existing_hits if h is not None)
                 continue
 
         need_prompt = wavlm_sim_fn is not None or (
             ko_mode_71693 not in ("text-only", "mms", "edge-tts")
         )
         speaker_prompt = (
-            _extract_prompt_24k_from_file(wav_path, spans)
+            extract_prompt_24k_from_file(wav_path, spans)
             if need_prompt
             else torch.zeros(SAMPLES_PER_FRAME, dtype=torch.float32)
         )
@@ -1185,20 +664,27 @@ def process_71693_to_pt(
                 break
 
             base_stem = f"71693_{lec_stem}_w{w_i:04d}"
-            if skip_existing:
-                already = _window_already_saved(existing_names, base_stem)
-                if already > 0:
-                    saved_count += already
-                    continue
-
             tts_cache: dict[str, Tuple[torch.Tensor, List[int], List[str]]] = {}
             queue: deque[Tuple[str, List[Span71693]]] = deque([(base_stem, base_win)])
             while queue:
                 if max_samples is not None and saved_count >= max_samples:
                     break
                 cur_stem, win_spans = queue.popleft()
-                can_split = cfg.context_frames > 0 and len(win_spans) > 1
 
+                if skip_existing:
+                    done_leaves = count_completed_window_tree(
+                        cur_stem, len(win_spans), existing_stems, branch_tags=("_p0", "_p1")
+                    )
+                    if done_leaves is not None:
+                        saved_count += done_leaves
+                        continue
+                    if len(win_spans) > 1 and cur_stem in split_ancestors:
+                        mid = len(win_spans) // 2
+                        queue.appendleft((f"{cur_stem}_p1", win_spans[mid:]))
+                        queue.appendleft((f"{cur_stem}_p0", win_spans[:mid]))
+                        continue
+
+                can_split = cfg.context_frames > 0 and len(win_spans) > 1
                 win_start_sec = min(sp.start_sec for sp in win_spans)
                 win_end_sec = min(
                     max(sp.end_sec for sp in win_spans),
@@ -1218,15 +704,20 @@ def process_71693_to_pt(
                     if cached is not None:
                         ko_wav, ko_ids, ko_pieces = cached
                     else:
-                        ko_ids = sp_encode_fn(sp.ko_text)
-                        ko_pieces = sp_pieces_fn(sp.ko_text)
-                        if ko_mode_71693 == "text-only":
+                        ko_ids = list(sp_encode_fn(sp.ko_text))
+                        validate_ko_token_ids(ko_ids, cfg.text_card)
+                        ko_pieces = list(sp_pieces_fn(sp.ko_text))
+                        if mask_target:
                             est_frames = max(len(ko_ids) + 2, int(max(1, len(sp.ko_text)) * 1.6))
                             ko_wav = torch.zeros(est_frames * SAMPLES_PER_FRAME, dtype=torch.float32)
                         else:
                             assert ko_tts_fn is not None
-                            ko_wav = ko_tts_fn(sp.ko_text, speaker_prompt, sp.gender)
-                        max_ko_samples = max(SAMPLES_PER_FRAME * 4, (hard_max_frames - 8) * SAMPLES_PER_FRAME)
+                            ko_wav = normalize_tts_output(
+                                ko_tts_fn(sp.ko_text, speaker_prompt, sp.gender)
+                            )
+                        max_ko_samples = max(
+                            SAMPLES_PER_FRAME * 4, (hard_max_frames - 8) * SAMPLES_PER_FRAME
+                        )
                         if ko_wav.numel() > max_ko_samples:
                             ko_wav = ko_wav[:max_ko_samples]
                         tts_cache[sp.sn] = (ko_wav, ko_ids, ko_pieces)
@@ -1238,7 +729,7 @@ def process_71693_to_pt(
                     en_e_frame = (rel_en_e + SAMPLES_PER_FRAME - 1) // SAMPLES_PER_FRAME
                     prev_ko_end_frame = (ko_cursor_sample + SAMPLES_PER_FRAME - 1) // SAMPLES_PER_FRAME
 
-                    eff_align = "uniform" if ko_mode_71693 == "text-only" else align_mode
+                    eff_align = "uniform" if mask_target else align_mode
                     audio_start_sample, tok_pos, last_token_frame = compute_aligned_token_placement(
                         ko_text=sp.ko_text,
                         ko_wav_24k=ko_wav,
@@ -1247,7 +738,7 @@ def process_71693_to_pt(
                         prev_audio_end_frame=prev_ko_end_frame,
                         last_token_frame=last_token_frame,
                         align_mode=eff_align,
-                        ko_align_fn=None if ko_mode_71693 == "text-only" else ko_align_fn,
+                        ko_align_fn=None if mask_target else ko_align_fn,
                         token_pieces=ko_pieces,
                         monologue_lead_frames=monologue_lead_frames,
                     )
@@ -1260,91 +751,63 @@ def process_71693_to_pt(
                 audio_end_frames = (
                     max(en_span_samples, ko_cursor_sample) + SAMPLES_PER_FRAME - 1
                 ) // SAMPLES_PER_FRAME
-                eos_frame = max(last_token_frame + 1, audio_end_frames)
-                total_frames = max(audio_end_frames + 4, eos_frame + 1)
-
-                if can_split and total_frames > cfg.context_frames:
+                est_total_frames = max(
+                    audio_end_frames + 4, max(last_token_frame + 1, audio_end_frames) + 1
+                )
+                if can_split and est_total_frames > cfg.context_frames:
                     mid = len(win_spans) // 2
                     queue.appendleft((f"{cur_stem}_p1", win_spans[mid:]))
                     queue.appendleft((f"{cur_stem}_p0", win_spans[:mid]))
                     continue
 
-                if total_frames > hard_max_frames:
-                    total_frames = hard_max_frames
-                    eos_frame = total_frames - 1
-
-                # 해당 윈도우 구간만 디스크에서 부분 Seek 로드 (145MB 전체 강의 로드 회피)
                 win_wav_slice = fast_load_mono_wav_24k(
                     wav_path, start_sec=win_start_sec, end_sec=win_end_sec
                 )
                 if win_wav_slice.numel() == 0:
                     continue
 
-                padded_samples = (total_frames + 2) * SAMPLES_PER_FRAME
-                en_timeline = torch.zeros(padded_samples, dtype=torch.float32)
+                en_placements: List[Tuple[int, torch.Tensor]] = []
                 for sp in win_spans:
-                    rel_s = max(0, min(int((sp.start_sec - win_start_sec) * SAMPLE_RATE), win_wav_slice.numel()))
-                    rel_e = max(rel_s, min(int((sp.end_sec - win_start_sec) * SAMPLE_RATE), win_wav_slice.numel()))
-                    if rel_e > rel_s and rel_e <= padded_samples:
-                        en_timeline[rel_s:rel_e] = win_wav_slice[rel_s:rel_e]
+                    rel_s = max(
+                        0, min(int((sp.start_sec - win_start_sec) * SAMPLE_RATE), win_wav_slice.numel())
+                    )
+                    rel_e = max(
+                        rel_s,
+                        min(int((sp.end_sec - win_start_sec) * SAMPLE_RATE), win_wav_slice.numel()),
+                    )
+                    if rel_e > rel_s:
+                        en_placements.append((rel_s, win_wav_slice[rel_s:rel_e]))
                 del win_wav_slice
 
-                ko_text_stream = torch.full((1, total_frames), TEXT_PAD_ID, dtype=torch.long)
-                for _, _, tok_pos in ko_placements:
-                    for f_pos, tid in tok_pos:
-                        if 0 <= f_pos < eos_frame:
-                            ko_text_stream[0, f_pos] = tid
-                ko_text_stream[0, eos_frame] = TEXT_EOS_ID
-
-                en_codes = _encode_mimi_aligned(
-                    en_timeline, mimi_encode_fn, total_frames, cfg.num_codebooks_per_stream
+                codes, ko_speech_only, built_meta = assemble_multistream_example(
+                    en_placements=en_placements,
+                    ko_placements=ko_placements,
+                    en_span_end_sample=en_span_samples,
+                    ko_end_sample=ko_cursor_sample,
+                    last_token_frame=last_token_frame,
+                    src_start_frames=src_start_frames,
+                    src_end_frames=src_end_frames,
+                    ref_token_groups=ref_token_groups,
+                    mimi_encode_fn=mimi_encode_fn,
+                    expected_q=cfg.num_codebooks_per_stream,
+                    align_mode=align_mode,
+                    mask_target_audio=mask_target,
+                    hard_max_frames=hard_max_frames,
                 )
-                del en_timeline
 
-                if ko_mode_71693 == "text-only":
-                    ko_codes = torch.full(
-                        (cfg.num_codebooks_per_stream, total_frames),
-                        ZERO_TOKEN_ID,
-                        dtype=torch.long,
+                if not mask_target and wavlm_sim_fn is not None and ko_speech_only.numel() > 0:
+                    sim_bin = validate_sim_bin(
+                        wavlm_sim_fn(speaker_prompt, ko_speech_only[: 10 * SAMPLE_RATE]),
+                        cfg.num_speaker_sim_bins,
                     )
-                    sim_bin = cfg.num_speaker_sim_bins - 1
                 else:
-                    ko_timeline = torch.zeros(padded_samples, dtype=torch.float32)
-                    active_clips: List[torch.Tensor] = []
-                    for start_sample, ko_wav, _ in ko_placements:
-                        end_s = min(padded_samples, start_sample + ko_wav.numel())
-                        if end_s > start_sample:
-                            ko_timeline[start_sample:end_s] = ko_wav[: end_s - start_sample]
-                            active_clips.append(ko_wav[: end_s - start_sample])
-                    ko_codes = _encode_mimi_aligned(
-                        ko_timeline, mimi_encode_fn, total_frames, cfg.num_codebooks_per_stream
-                    )
-                    del ko_timeline
-                    if wavlm_sim_fn is not None and active_clips:
-                        sim_bin = int(
-                            wavlm_sim_fn(speaker_prompt, torch.cat(active_clips, dim=0)[: 10 * SAMPLE_RATE])
-                        )
-                    elif ko_mode_71693 == "mms":
-                        sim_bin = min(1, cfg.num_speaker_sim_bins - 1)
-                    else:
-                        sim_bin = min(2, cfg.num_speaker_sim_bins - 1)
+                    sim_bin = resolve_default_sim_bin(audio_src_tag, cfg.num_speaker_sim_bins)
 
-                codes = torch.cat([ko_text_stream, ko_codes, en_codes], dim=0)
+                built_meta["dataset"] = "71693"
+                built_meta["ko_audio_source"] = ko_mode_71693
                 out_pt = output_dir / f"{cur_stem}.pt"
-                atomic_torch_save(
-                    {
-                        "codes": codes,
-                        "sim_bin": int(sim_bin),
-                        "src_start_frames": src_start_frames,
-                        "src_end_frames": src_end_frames,
-                        "ref_token_groups": ref_token_groups,
-                        "align_mode": "uniform" if ko_mode_71693 == "text-only" else align_mode,
-                        "dataset": "71693",
-                        "ko_audio_source": ko_mode_71693,
-                    },
-                    out_pt,
-                )
-                existing_names.add(out_pt.name)
+                save_training_example_pt(out_pt, codes, sim_bin, metadata=built_meta)
+                existing_stems.add(cur_stem)
                 saved_count += 1
                 _maybe_release_memory(saved_count, device)
 
@@ -1382,13 +845,15 @@ def process_71379_to_pt(
     max_overlap_sec: float = 4.0,
     skip_existing: bool = True,
     max_samples: Optional[int] = None,
+    standalone_real: bool = False,
+    explicit_real_sim_bin: Optional[int] = None,
 ) -> int:
     """파싱된 71379 씬 그룹들을 저메모리·정밀 정렬 `.pt` 파일로 변환하여 저장합니다."""
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info("[71379] 한/영 원천·발화 WAV 파일 고속 인덱싱 중...")
     t_idx = time.perf_counter()
-    ko_wav_index, _ = _fast_scandir_files(ko_wav_dirs, ".wav")
-    en_wav_index, _ = _fast_scandir_files(en_wav_dirs, ".wav")
+    ko_wav_index, _ = fast_scandir_files(ko_wav_dirs, ".wav")
+    en_wav_index, _ = fast_scandir_files(en_wav_dirs, ".wav")
     logger.info(
         "[71379] WAV 인덱싱 완료: KO=%d개, EN=%d개 (%.1fs)",
         len(ko_wav_index),
@@ -1396,7 +861,9 @@ def process_71379_to_pt(
         time.perf_counter() - t_idx,
     )
 
-    existing_names = {p.name for p in output_dir.glob("*.pt")} if skip_existing else set()
+    existing_stems, split_ancestors = (
+        index_existing_window_trees(output_dir) if skip_existing else (set(), set())
+    )
 
     saved_count = 0
     t0 = time.perf_counter()
@@ -1428,20 +895,26 @@ def process_71379_to_pt(
 
         recs_only = [t[0] for t in valid_triples]
         path_map = {t[0].utt_id: (t[1], t[2]) for t in valid_triples}
-        windows = _slice_71379_windows(
+        windows = slice_71379_windows(
             recs_only,
             target_window_sec=target_window_sec,
             max_gap_sec=max_gap_sec,
             inter_utt_pause_sec=inter_utt_pause_sec,
+            min_est_dur_sec=2.5,
         )
 
         if skip_existing and windows:
             hits = [
-                _window_already_saved(existing_names, f"71379_{group_key}_w{w_i:04d}")
-                for w_i in range(len(windows))
+                count_completed_window_tree(
+                    f"71379_{group_key}_w{w_i:04d}",
+                    len(w_recs),
+                    existing_stems,
+                    branch_tags=("_p0", "_p1"),
+                )
+                for w_i, w_recs in enumerate(windows)
             ]
-            if all(h > 0 for h in hits):
-                saved_count += sum(hits)
+            if all(h is not None for h in hits):
+                saved_count += sum(h for h in hits if h is not None)
                 continue
 
         for w_i, base_win in enumerate(windows):
@@ -1449,18 +922,26 @@ def process_71379_to_pt(
                 break
 
             base_stem = f"71379_{group_key}_w{w_i:04d}"
-            if skip_existing:
-                already = _window_already_saved(existing_names, base_stem)
-                if already > 0:
-                    saved_count += already
-                    continue
-
             clip_cache: dict[str, Tuple[torch.Tensor, torch.Tensor, List[int], List[str]]] = {}
             queue: deque[Tuple[str, List[Utterance71379]]] = deque([(base_stem, base_win)])
             while queue:
                 if max_samples is not None and saved_count >= max_samples:
                     break
                 cur_stem, win_recs = queue.popleft()
+
+                if skip_existing:
+                    done_leaves = count_completed_window_tree(
+                        cur_stem, len(win_recs), existing_stems, branch_tags=("_p0", "_p1")
+                    )
+                    if done_leaves is not None:
+                        saved_count += done_leaves
+                        continue
+                    if len(win_recs) > 1 and cur_stem in split_ancestors:
+                        mid = len(win_recs) // 2
+                        queue.appendleft((f"{cur_stem}_p1", win_recs[mid:]))
+                        queue.appendleft((f"{cur_stem}_p0", win_recs[:mid]))
+                        continue
+
                 can_split = cfg.context_frames > 0 and len(win_recs) > 1
 
                 en_placements: List[Tuple[int, torch.Tensor]] = []
@@ -1485,8 +966,13 @@ def process_71379_to_pt(
                         if en_wav.numel() == 0 or ko_wav.numel() == 0:
                             failed_utt = True
                             break
-                        ko_ids = sp_encode_fn(rec.ko_text)
-                        ko_pieces = sp_pieces_fn(rec.ko_text)
+                        ko_ids = list(sp_encode_fn(rec.ko_text))
+                        try:
+                            validate_ko_token_ids(ko_ids, cfg.text_card)
+                        except ValueError:
+                            failed_utt = True
+                            break
+                        ko_pieces = list(sp_pieces_fn(rec.ko_text))
                         clip_cache[rec.utt_id] = (en_wav, ko_wav, ko_ids, ko_pieces)
 
                     if i == 0:
@@ -1539,77 +1025,55 @@ def process_71379_to_pt(
                 audio_end_frames = (
                     max(prev_en_end_sample, ko_cursor_sample) + SAMPLES_PER_FRAME - 1
                 ) // SAMPLES_PER_FRAME
-                eos_frame = max(last_token_frame + 1, audio_end_frames)
-                total_frames = max(audio_end_frames + 4, eos_frame + 1)
-
-                if can_split and total_frames > cfg.context_frames:
+                est_total_frames = max(
+                    audio_end_frames + 4, max(last_token_frame + 1, audio_end_frames) + 1
+                )
+                if can_split and est_total_frames > cfg.context_frames:
                     mid = len(win_recs) // 2
                     queue.appendleft((f"{cur_stem}_p1", win_recs[mid:]))
                     queue.appendleft((f"{cur_stem}_p0", win_recs[:mid]))
                     continue
 
-                if total_frames > hard_max_frames:
-                    total_frames = hard_max_frames
-                    eos_frame = total_frames - 1
-
-                padded_samples = (total_frames + 2) * SAMPLES_PER_FRAME
-                en_timeline = torch.zeros(padded_samples, dtype=torch.float32)
-                ko_timeline = torch.zeros(padded_samples, dtype=torch.float32)
-                ko_text_stream = torch.full((1, total_frames), TEXT_PAD_ID, dtype=torch.long)
-
-                for start_s, en_w in en_placements:
-                    end_s = min(padded_samples, start_s + en_w.numel())
-                    if end_s > start_s:
-                        en_timeline[start_s:end_s] = en_w[: end_s - start_s]
-                for start_s, ko_w, tok_pos in ko_placements:
-                    end_s = min(padded_samples, start_s + ko_w.numel())
-                    if end_s > start_s:
-                        ko_timeline[start_s:end_s] = ko_w[: end_s - start_s]
-                    for f_pos, tid in tok_pos:
-                        if 0 <= f_pos < eos_frame:
-                            ko_text_stream[0, f_pos] = tid
-                ko_text_stream[0, eos_frame] = TEXT_EOS_ID
-
-                ko_codes = _encode_mimi_aligned(
-                    ko_timeline, mimi_encode_fn, total_frames, cfg.num_codebooks_per_stream
+                codes, ko_speech_only, built_meta = assemble_multistream_example(
+                    en_placements=en_placements,
+                    ko_placements=ko_placements,
+                    en_span_end_sample=prev_en_end_sample,
+                    ko_end_sample=ko_cursor_sample,
+                    last_token_frame=last_token_frame,
+                    src_start_frames=src_start_frames,
+                    src_end_frames=src_end_frames,
+                    ref_token_groups=ref_token_groups,
+                    mimi_encode_fn=mimi_encode_fn,
+                    expected_q=cfg.num_codebooks_per_stream,
+                    align_mode=align_mode,
+                    mask_target_audio=False,
+                    hard_max_frames=hard_max_frames,
                 )
-                del ko_timeline
-                en_codes = _encode_mimi_aligned(
-                    en_timeline, mimi_encode_fn, total_frames, cfg.num_codebooks_per_stream
-                )
-                del en_timeline
 
                 if wavlm_sim_fn is not None:
                     en_only = torch.cat([w for _, w in en_placements], dim=0)[: 10 * SAMPLE_RATE]
-                    ko_only = torch.cat([w for _, w, _ in ko_placements], dim=0)[: 10 * SAMPLE_RATE]
-                    sim_bin = int(wavlm_sim_fn(en_only, ko_only))
+                    sim_bin = validate_sim_bin(
+                        wavlm_sim_fn(en_only, ko_speech_only[: 10 * SAMPLE_RATE]),
+                        cfg.num_speaker_sim_bins,
+                    )
                 else:
                     first_rec = win_recs[0]
                     same_sex = bool(
                         first_rec.s_sex and first_rec.t_sex and first_rec.s_sex == first_rec.t_sex
                     )
-                    sim_bin = (
-                        cfg.num_speaker_sim_bins - 1
-                        if same_sex
-                        else max(0, cfg.num_speaker_sim_bins - 2)
+                    sim_bin = resolve_default_sim_bin(
+                        "real_pair",
+                        num_speaker_sim_bins=cfg.num_speaker_sim_bins,
+                        same_sex=same_sex,
+                        standalone_real=standalone_real,
+                        explicit_sim_bin=explicit_real_sim_bin,
                     )
 
-                codes = torch.cat([ko_text_stream, ko_codes, en_codes], dim=0)
+                built_meta["dataset"] = "71379"
+                built_meta["ko_audio_source"] = "real"
                 out_pt = output_dir / f"{cur_stem}.pt"
-                atomic_torch_save(
-                    {
-                        "codes": codes,
-                        "sim_bin": int(sim_bin),
-                        "src_start_frames": src_start_frames,
-                        "src_end_frames": src_end_frames,
-                        "ref_token_groups": ref_token_groups,
-                        "align_mode": align_mode,
-                        "dataset": "71379",
-                        "ko_audio_source": "real",
-                    },
-                    out_pt,
-                )
-                existing_names.add(out_pt.name)
+                save_training_example_pt(out_pt, codes, sim_bin, metadata=built_meta)
+                existing_stems.add(cur_stem)
                 saved_count += 1
                 _maybe_release_memory(saved_count, device)
 
@@ -1626,11 +1090,6 @@ def process_71379_to_pt(
 
     del ko_wav_index, en_wav_index
     return saved_count
-
-
-# ==============================================================================
-# 5. 순차 분할 오케스트레이터 (train 해제 후 val 적재)
-# ==============================================================================
 
 
 def verify_preprocessed_split(
@@ -1714,7 +1173,7 @@ def _parse_single_split(
 
 
 def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
-    """`D:\\data`와 `D:\\data2`를 저메모리 순차 파이프라인으로 전처리하여 `E:\\preprocessed_edarch`에 저장합니다."""
+    """대용량 AI-Hub 71693·71379 데이터셋을 저메모리 순차 파이프라인으로 전처리하여 train/val로 분리 저장합니다."""
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     device = setup_device(cpu_only=args.cpu, seed=args.seed, tag="PreprocessAll")
 
@@ -1762,7 +1221,6 @@ def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
         args.tokenizer if args.tokenizer is not None else (args.output_dir / "ko_spm.model")
     )
 
-    # 첫 번째 분할(train 우선)만 먼저 파싱하여 토크나이저 구축 후 즉시 재사용 (train+val 동시 상주 방지)
     ordered_splits = [s for s in ("train", "val") if s in requested_splits]
     first_split = ordered_splits[0]
     first_g93, first_g79 = _parse_single_split(first_split, ly93_map, ly79_map, args)
@@ -1863,9 +1321,11 @@ def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
     )
 
     ko_tts_fn: Optional[Callable[[str, torch.Tensor, str], torch.Tensor]] = None
+    effective_93_mode = args.ko_mode_71693
     if use_71693 and args.ko_mode_71693 != "text-only":
         if custom_tts is not None:
-            ko_tts_fn = lambda txt, prompt, gender="": custom_tts(txt, prompt)
+            ko_tts_fn = lambda txt, prompt, gender="": normalize_tts_output(custom_tts(txt, prompt))
+            effective_93_mode = "cloned_tts"
         elif args.ko_mode_71693 == "mms":
             ko_tts_fn = build_mms_korean_tts_fn(device=device, model_id=args.mms_tts_model)
         elif args.ko_mode_71693 == "edge-tts":
@@ -1876,6 +1336,8 @@ def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
         if (args.align_mode == "auto" and ko_align_fn is None)
         else args.align_mode
     )
+    standalone_71379 = use_71379 and not use_71693
+    explicit_real_sim_bin = getattr(args, "real_pair_sim_bin", None)
 
     stats: dict[str, dict[str, int]] = {"train": {}, "val": {}}
     for idx_sp, sp_name in enumerate(ordered_splits):
@@ -1920,6 +1382,8 @@ def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
                 max_overlap_sec=args.max_overlap_sec,
                 skip_existing=not args.overwrite,
                 max_samples=val_cap_79,
+                standalone_real=standalone_71379,
+                explicit_real_sim_bin=explicit_real_sim_bin,
             )
             stats[sp_name]["71379"] = cnt_79
             cur_g79 = None
@@ -1933,7 +1397,7 @@ def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
             logger.info(
                 "=== [71693 / %s] 전처리 시작 (ko_mode=%s) -> %s ===",
                 sp_name,
-                args.ko_mode_71693,
+                effective_93_mode,
                 out_93,
             )
             cnt_93 = process_71693_to_pt(
@@ -1945,7 +1409,7 @@ def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
                 sp_encode_fn=sp_encode_fn,
                 sp_pieces_fn=sp_pieces_fn,
                 mimi_encode_fn=mimi_encode_fn,
-                ko_mode_71693=args.ko_mode_71693,
+                ko_mode_71693=effective_93_mode,
                 ko_tts_fn=ko_tts_fn,
                 wavlm_sim_fn=wavlm_sim_fn,
                 align_mode=effective_align,
@@ -1989,17 +1453,19 @@ def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
         "context_frames": cfg.context_frames,
         "target_window_sec": args.target_window_sec,
         "align_mode": effective_align,
-        "ko_mode_71693": args.ko_mode_71693 if use_71693 else "disabled",
+        "ko_mode_71693": effective_93_mode if use_71693 else "disabled",
         "saved_samples": stats,
         "verified": verified_counts,
         "commands": {
             "stage1_sft": (
                 f'python train.py --preset {args.preset} --ko-vocab-size {cfg.text_card} '
-                f'--data-dir "{train_dir}" --grad-checkpointing --batch-size 1 --grad-accum-steps 16 --epochs 10'
+                f'--data-dir "{train_dir}" --val-data-dir "{val_dir}" '
+                f'--grad-checkpointing --batch-size 1 --grad-accum-steps 16 --epochs 10'
             ),
             "stage2_grpo": (
                 f'python train_grpo.py --preset {args.preset} --ko-vocab-size {cfg.text_card} '
-                f'--data-dir "{train_dir}" --tokenizer "{tok_path}" --grad-checkpointing --group-size 4'
+                f'--data-dir "{train_dir}" --val-data-dir "{val_dir}" '
+                f'--tokenizer "{tok_path}" --grad-checkpointing --group-size 4'
             ),
             "inference": (
                 f'python run.py --mimi-model {args.mimi_model} --tokenizer "{tok_path}" '
@@ -2011,9 +1477,12 @@ def run_d_drive_preprocessing(args: argparse.Namespace) -> None:
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\n" + "=" * 78)
-    print("[Done] D:\\data & D:\\data2 학습 데이터 전처리 완료!")
+    print("[Done] AI-Hub 71693 & 71379 학습 데이터 분할 전처리 완료!")
     print(f"  - 출력 루트 디렉터리 : {args.output_dir}")
-    print(f"  - 한국어 토크나이저  : {tok_path} (vocab_size={cfg.text_card})")
+    print(
+        f"  - 한국어 토크나이저  : {tok_path} "
+        f"(spm_vocab={sp_vocab}, model_text_card={cfg.text_card})"
+    )
     print(f"  - Train 샘플 수     : {stats.get('train', {})}")
     print(f"  - Val 샘플 수       : {stats.get('val', {})} (경로: {val_dir})")
     print("-" * 78)

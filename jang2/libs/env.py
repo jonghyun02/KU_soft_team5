@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import subprocess
 import sys
 import time
@@ -164,6 +165,7 @@ def setup_device(cpu_only: bool, seed: int, tag: str = "EDarch"):
     """난수 시드를 고정하고 CUDA 가용성에 따라 TF32 가속이 설정된 PyTorch 디바이스를 반환합니다."""
     import torch
 
+    random.seed(seed)
     torch.manual_seed(seed)
     cuda_available = torch.cuda.is_available()
     use_cuda = (not cpu_only) and cuda_available
@@ -201,15 +203,22 @@ def atomic_torch_save(
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
-    torch.save(dict(payload), tmp_path)
-    for attempt in range(max_retries):
+    try:
+        torch.save(dict(payload), tmp_path)
+        for attempt in range(max_retries):
+            try:
+                os.replace(tmp_path, save_path)
+                return
+            except PermissionError:
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(0.1 * (2**attempt))
+    except BaseException:
         try:
-            os.replace(tmp_path, save_path)
-            return
-        except PermissionError:
-            if attempt == max_retries - 1:
-                raise
-            time.sleep(0.1 * (2**attempt))
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def add_env_cli_args(

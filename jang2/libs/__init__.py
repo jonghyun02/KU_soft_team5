@@ -16,6 +16,11 @@ _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "EDarchStreamingGenerator": ("libs.streaming", "EDarchStreamingGenerator"),
     "train_korean_sentencepiece": ("libs.tokenizer", "train_korean_sentencepiece"),
     "load_korean_tokenizer": ("libs.tokenizer", "load_korean_tokenizer"),
+    "UtteranceSpan": ("libs.preprocessing_common", "UtteranceSpan"),
+    "BroadcastUtterance71379": ("libs.preprocessing_common", "BroadcastUtterance71379"),
+    "assemble_multistream_example": ("libs.preprocessing_common", "assemble_multistream_example"),
+    "encode_mimi_timeline": ("libs.preprocessing_common", "encode_mimi_timeline"),
+    "resolve_default_sim_bin": ("libs.preprocessing_common", "resolve_default_sim_bin"),
 }
 
 __all__ = list(_EXPORT_MAP.keys())

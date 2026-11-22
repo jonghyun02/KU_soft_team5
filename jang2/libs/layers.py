@@ -435,7 +435,10 @@ class SpeakerSimilarityConditioner(nn.Module):
 
 
 def delay_sequence(
-    delays: list[int], codes: torch.Tensor, initial_tokens: torch.Tensor
+    delays: list[int],
+    codes: torch.Tensor,
+    initial_tokens: torch.Tensor,
+    zero_token_id: int = -1,
 ) -> torch.Tensor:
     """각 스트림의 지정된 프레임 지연(`delays`)만큼 시퀀스를 우측으로 밀고 초기 토큰으로 앞을 채웁니다."""
     bsz, _, seq_len = codes.shape
@@ -443,11 +446,22 @@ def delay_sequence(
     for k, d in enumerate(delays):
         if d == 0:
             delayed[:, k, :] = codes[:, k, :]
-        elif d < seq_len:
-            pad = initial_tokens[:, k, :].expand(bsz, d)
-            delayed[:, k, :] = torch.cat([pad, codes[:, k, :-d]], dim=-1)
         else:
-            delayed[:, k, :] = initial_tokens[:, k, :].expand(bsz, seq_len)
+            bos_pad = initial_tokens[:, k, :]
+            if seq_len > 0:
+                is_masked_stream = codes[:, k, :1] == zero_token_id
+                pad_tok = torch.where(
+                    is_masked_stream,
+                    torch.full_like(bos_pad, zero_token_id),
+                    bos_pad,
+                )
+            else:
+                pad_tok = bos_pad
+            if d < seq_len:
+                pad = pad_tok.expand(bsz, d)
+                delayed[:, k, :] = torch.cat([pad, codes[:, k, :-d]], dim=-1)
+            else:
+                delayed[:, k, :] = pad_tok.expand(bsz, seq_len)
     return delayed
 
 

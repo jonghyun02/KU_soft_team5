@@ -431,7 +431,7 @@ def _viterbi_ctc_forced_align(
     target_ids: List[int],
     blank_id: int,
 ) -> List[Tuple[int, int]]:
-    """순수 PyTorch Viterbi 동적 계획법으로 CTC 로그 확률 행렬에 정답 토큰 시퀀스를 강제 정렬합니다."""
+    """벡터화된 PyTorch Viterbi 동적 계획법으로 CTC 로그 확률 행렬에 정답 토큰 시퀀스를 강제 정렬합니다."""
     num_frames = int(log_probs.shape[0])
     num_targets = len(target_ids)
     if num_targets == 0 or num_frames == 0:
@@ -443,32 +443,39 @@ def _viterbi_ctc_forced_align(
     num_states = len(ext_tokens)
 
     neg_inf = -1e30
+    lp_cpu = log_probs.detach().cpu().float()
+    ext_idx = torch.tensor(ext_tokens, dtype=torch.long)
+    emit_scores = lp_cpu[:, ext_idx]
+
     dp = torch.full((num_frames, num_states), neg_inf, dtype=torch.float32)
     backptr = torch.zeros((num_frames, num_states), dtype=torch.long)
 
-    lp_cpu = log_probs.detach().cpu().float()
-    dp[0, 0] = float(lp_cpu[0, ext_tokens[0]].item())
+    dp[0, 0] = emit_scores[0, 0]
     if num_states > 1:
-        dp[0, 1] = float(lp_cpu[0, ext_tokens[1]].item())
+        dp[0, 1] = emit_scores[0, 1]
+
+    can_skip2 = torch.zeros(num_states, dtype=torch.bool)
+    if num_states > 2:
+        can_skip2[2:] = (ext_idx[2:] != blank_id) & (ext_idx[2:] != ext_idx[:-2])
+
+    s_arange = torch.arange(num_states, dtype=torch.long)
+    neg_inf_1 = torch.full((1,), neg_inf, dtype=torch.float32)
+    neg_inf_2 = torch.full((min(2, num_states),), neg_inf, dtype=torch.float32)
+    neg_inf_s = torch.full((num_states,), neg_inf, dtype=torch.float32)
 
     for t in range(1, num_frames):
         prev = dp[t - 1]
-        for s in range(num_states):
-            best_val = float(prev[s].item())
-            best_src = s
-            if s >= 1 and float(prev[s - 1].item()) > best_val:
-                best_val = float(prev[s - 1].item())
-                best_src = s - 1
-            if (
-                s >= 2
-                and ext_tokens[s] != blank_id
-                and ext_tokens[s] != ext_tokens[s - 2]
-                and float(prev[s - 2].item()) > best_val
-            ):
-                best_val = float(prev[s - 2].item())
-                best_src = s - 2
-            dp[t, s] = best_val + float(lp_cpu[t, ext_tokens[s]].item())
-            backptr[t, s] = best_src
+        c0 = prev
+        c1 = torch.cat([neg_inf_1, prev[:-1]], dim=0) if num_states > 1 else neg_inf_s
+        if num_states > 2:
+            c2_raw = torch.cat([neg_inf_2, prev[:-2]], dim=0)
+            c2 = torch.where(can_skip2, c2_raw, neg_inf_s)
+        else:
+            c2 = neg_inf_s
+        cands = torch.stack([c0, c1, c2], dim=0)
+        best_vals, best_offsets = cands.max(dim=0)
+        dp[t] = best_vals + emit_scores[t]
+        backptr[t] = s_arange - best_offsets
 
     last_s = num_states - 1
     if num_states >= 2 and float(dp[-1, num_states - 2].item()) > float(
@@ -476,11 +483,12 @@ def _viterbi_ctc_forced_align(
     ):
         last_s = num_states - 2
 
+    backptr_list = backptr.tolist()
     state_path = [0] * num_frames
     cur_s = last_s
     for t in range(num_frames - 1, -1, -1):
         state_path[t] = cur_s
-        cur_s = int(backptr[t, cur_s].item())
+        cur_s = backptr_list[t][cur_s]
 
     spans: List[Tuple[int, int]] = []
     for tok_i in range(num_targets):

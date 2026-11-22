@@ -289,7 +289,9 @@ class EDarchModel(nn.Module):
             )
 
         initial = self.get_initial_tokens(bsz, codes.device)
-        delayed = delay_sequence(self.cfg.delays, codes, initial)
+        delayed = delay_sequence(
+            self.cfg.delays, codes, initial, zero_token_id=self.cfg.zero_token_id
+        )
         delayed_with_bos = torch.cat([initial, delayed], dim=2)
 
         cond_emb: Optional[torch.Tensor] = None
@@ -313,12 +315,38 @@ class EDarchModel(nn.Module):
             dep_target_inputs, z_t
         )
 
-        dep_step_valid = (
-            (dep_target_inputs[:, : self.train_dep_q, :] != self.cfg.zero_token_id)
+        q_dep = self.cfg.dep_q
+        tgt_step_valid = (
+            (dep_target_inputs[:, :q_dep, :] != self.cfg.zero_token_id)
             .long()
             .cumprod(dim=1)
             .bool()
         )
+        if self.train_dep_q > q_dep:
+            src_extra = self.train_dep_q - q_dep
+            is_text_only = (
+                codes[:, 1:2, :1] == self.cfg.zero_token_id
+                if codes.shape[2] > 0
+                else torch.zeros((bsz, 1, 1), dtype=torch.bool, device=codes.device)
+            )
+            src_first_ok = torch.where(
+                is_text_only,
+                dep_target_inputs[:, :1, :] != self.cfg.zero_token_id,
+                tgt_step_valid[:, -1:, :]
+                & (dep_target_inputs[:, q_dep : q_dep + 1, :] != self.cfg.zero_token_id),
+            )
+            if src_extra > 1:
+                src_rest_ok = (
+                    dep_target_inputs[:, q_dep + 1 : self.train_dep_q, :]
+                    != self.cfg.zero_token_id
+                )
+                src_chain = torch.cat([src_first_ok, src_rest_ok], dim=1)
+            else:
+                src_chain = src_first_ok
+            src_step_valid = src_chain.long().cumprod(dim=1).bool()
+            dep_step_valid = torch.cat([tgt_step_valid, src_step_valid], dim=1)
+        else:
+            dep_step_valid = tgt_step_valid
         return delayed_text_logits, delayed_audio_logits, dep_target_inputs, dep_step_valid
 
     def forward(

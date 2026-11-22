@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import copy
+from dataclasses import asdict, dataclass
 import importlib
 import math
-from collections import Counter
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
@@ -18,6 +18,7 @@ from libs.config import EDarchConfig
 from libs.env import atomic_torch_save, setup_device
 from libs.model import EDarchModel, EDarchSequenceLogProbs
 from libs.optim import (
+    AMPContext,
     build_adamw_param_groups,
     build_warmup_cosine_scheduler,
     resolve_amp_context,
@@ -53,6 +54,27 @@ class RolloutBatch:
     eos_suppress_steps: int = 0
 
 
+def _move_seq_lp(
+    lp: EDarchSequenceLogProbs, target_device: torch.device
+) -> EDarchSequenceLogProbs:
+    """시퀀스 로그 확률 데이터클래스 내부 텐서들을 지정된 디바이스로 분리·이동합니다."""
+    return EDarchSequenceLogProbs(
+        text_log_probs=lp.text_log_probs.detach().to(target_device, non_blocking=True),
+        text_mask=lp.text_mask.detach().to(target_device, non_blocking=True),
+        audio_log_probs=lp.audio_log_probs.detach().to(target_device, non_blocking=True),
+        audio_mask=lp.audio_mask.detach().to(target_device, non_blocking=True),
+    )
+
+
+def _average_metric_dicts(dicts: Sequence[dict[str, float]]) -> dict[str, float]:
+    """여러 스텝에서 수집된 스칼라 메트릭 딕셔너리들의 키별 산술 평균을 반환합니다."""
+    if not dicts:
+        return {}
+    keys = dicts[0].keys()
+    denom = float(len(dicts))
+    return {k: sum(float(d.get(k, 0.0)) for d in dicts) / denom for k in keys}
+
+
 def _infer_source_span(
     en_codes: torch.Tensor,
     raw_item: dict[str, Any],
@@ -80,6 +102,9 @@ def _infer_source_span(
         for s_f, e_f in zip(starts, ends):
             if s_f >= src_len:
                 break
+            if e_f > crop_src_frames and len(clipped_ends) >= 1:
+                src_len = clipped_ends[-1]
+                break
             clipped_starts.append(s_f)
             clipped_ends.append(min(e_f, src_len))
         if clipped_ends:
@@ -103,6 +128,7 @@ class GRPOPromptDataset:
         data_dir: Path,
         crop_src_frames: int,
         cfg: EDarchConfig,
+        default_sim_bin: Optional[int] = None,
     ):
         """프롬프트 `.pt` 파일 목록을 수집하고 첫 번째 프롬프트의 유효성을 검증합니다."""
         if crop_src_frames < 1:
@@ -112,6 +138,9 @@ class GRPOPromptDataset:
             raise FileNotFoundError(f"{data_dir}에서 .pt 파일을 찾지 못했습니다.")
         self.crop_src_frames = crop_src_frames
         self.cfg = cfg
+        self.default_sim_bin = (
+            cfg.num_speaker_sim_bins - 1 if default_sim_bin is None else int(default_sim_bin)
+        )
 
         _ = self[0]
 
@@ -161,7 +190,7 @@ class GRPOPromptDataset:
             ]
             ref_groups = [ref_tokens] if ref_tokens else [[]]
 
-        sim_bin = int(item.get("sim_bin", self.cfg.num_speaker_sim_bins - 1))
+        sim_bin = int(item.get("sim_bin", self.default_sim_bin))
         sim_bin = max(0, min(self.cfg.num_speaker_sim_bins - 1, sim_bin))
 
         return GRPOPromptSample(
@@ -217,25 +246,31 @@ def compute_laal_latency_sec(
     src_end_frame: int,
     ref_len: int,
     frame_rate: float = 12.5,
+    horizon_frames: Optional[int] = None,
 ) -> float:
-    """방출된 번역 토큰의 타임스탬프로부터 동시통역 LAAL(Length-Adaptive Average Lagging, 초) 지연을 계산합니다."""
+    """방출된 번역 토큰 타임스탬프로부터 원문 종료 후 침묵 지연까지 반영한 실시간 LAAL(초)을 계산합니다."""
     src_dur = max(1, src_end_frame - src_start_frame)
+    empty_frames = (
+        max(src_dur, horizon_frames - src_start_frame)
+        if horizon_frames is not None
+        else src_dur
+    )
     if not tok_frames:
-        return float(src_dur) / frame_rate
+        return float(empty_frames) / frame_rate
 
     pred_len = len(tok_frames)
     gamma = float(max(pred_len, max(1, ref_len))) / float(src_dur)
     lags: List[float] = []
 
     for i, f_pos in enumerate(tok_frames):
-        rel_read = min(float(max(0, f_pos - src_start_frame + 1)), float(src_dur))
+        elapsed_frames = float(max(0, f_pos - src_start_frame + 1))
         ideal_read = float(i) / max(1e-6, gamma)
-        lags.append(max(0.0, rel_read - ideal_read))
+        lags.append(max(0.0, elapsed_frames - ideal_read))
         if f_pos + 1 >= src_end_frame:
             break
 
     if not lags:
-        return float(src_dur) / frame_rate
+        return float(empty_frames) / frame_rate
     return float(sum(lags) / len(lags)) / frame_rate
 
 
@@ -397,6 +432,7 @@ def evaluate_rollout_group_rewards(
         if prompt.src_end_frames
         else int(prompt.src_codes.shape[1])
     )
+    rollout_horizon = int(rollout.rollout_codes.shape[2])
     ref_text_str = (
         sp_decode_fn(prompt.ref_tokens)
         if (sp_decode_fn is not None and prompt.ref_tokens)
@@ -453,6 +489,7 @@ def evaluate_rollout_group_rewards(
             src_end_frame=src_end,
             ref_len=len(prompt.ref_tokens),
             frame_rate=cfg.frame_rate,
+            horizon_frames=rollout_horizon,
         )
 
         anti_cheat_penalty = 0.0
@@ -543,12 +580,14 @@ def compute_grpo_loss(
         eos_suppress_steps=eos_suppress_steps,
         cfg_coef=cfg_coef,
     )
+    dev = rollout_codes.device
     bsz = rollout_codes.shape[0]
-    adv_t = advantages.to(device=rollout_codes.device, dtype=torch.float32).view(bsz, 1, 1)
+    adv_t = advantages.to(device=dev, dtype=torch.float32).view(bsz, 1, 1)
 
     t_mask_f = new_lp.text_mask.float()
     t_denom = t_mask_f.sum(dim=(1, 2)).clamp_min(1.0)
-    t_log_ratio = (new_lp.text_log_probs - old_lp.text_log_probs.detach()).clamp(-20.0, 20.0)
+    old_t_lp = old_lp.text_log_probs.to(dev, non_blocking=True).detach()
+    t_log_ratio = (new_lp.text_log_probs - old_t_lp).clamp(-20.0, 20.0)
     t_ratio = torch.exp(t_log_ratio)
     t_surr1 = t_ratio * adv_t
     t_surr2 = torch.clamp(t_ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv_t
@@ -557,7 +596,7 @@ def compute_grpo_loss(
 
     if ref_lp is not None and kl_coef > 0.0:
         t_ref_diff = (
-            ref_lp.text_log_probs.to(new_lp.text_log_probs.device) - new_lp.text_log_probs
+            ref_lp.text_log_probs.to(dev, non_blocking=True) - new_lp.text_log_probs
         ).clamp(-20.0, 20.0)
         t_kl_per_tok = (torch.exp(t_ref_diff) - t_ref_diff - 1.0) * t_mask_f
         text_kl = (t_kl_per_tok.sum(dim=(1, 2)) / t_denom).mean()
@@ -565,16 +604,15 @@ def compute_grpo_loss(
         text_kl = text_pg_loss * 0.0
 
     dep_q = policy_model.train_dep_q
-    cb_w = torch.ones(dep_q, device=rollout_codes.device, dtype=torch.float32)
+    cb_w = torch.ones(dep_q, device=dev, dtype=torch.float32)
     cb_w[0] = 5.0
     cb_w = cb_w / cb_w.mean()
     a_weight_mask = new_lp.audio_mask.float() * cb_w.view(1, dep_q, 1)
     a_denom = a_weight_mask.sum(dim=(1, 2)).clamp_min(1.0)
 
     if audio_pg_weight > 0.0:
-        a_log_ratio = (new_lp.audio_log_probs - old_lp.audio_log_probs.detach()).clamp(
-            -20.0, 20.0
-        )
+        old_a_lp = old_lp.audio_log_probs.to(dev, non_blocking=True).detach()
+        a_log_ratio = (new_lp.audio_log_probs - old_a_lp).clamp(-20.0, 20.0)
         a_ratio = torch.exp(a_log_ratio)
         a_surr1 = a_ratio * adv_t
         a_surr2 = torch.clamp(a_ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv_t
@@ -585,7 +623,7 @@ def compute_grpo_loss(
 
     if ref_lp is not None and kl_coef > 0.0:
         a_ref_diff = (
-            ref_lp.audio_log_probs.to(new_lp.audio_log_probs.device) - new_lp.audio_log_probs
+            ref_lp.audio_log_probs.to(dev, non_blocking=True) - new_lp.audio_log_probs
         ).clamp(-20.0, 20.0)
         a_kl_per_tok = (torch.exp(a_ref_diff) - a_ref_diff - 1.0) * a_weight_mask
         audio_kl = (a_kl_per_tok.sum(dim=(1, 2)) / a_denom).mean()
@@ -610,6 +648,64 @@ def compute_grpo_loss(
     return total_loss, metrics
 
 
+@torch.no_grad()
+def _evaluate_grpo_validation(
+    policy_model: EDarchModel,
+    val_dataset: GRPOPromptDataset,
+    max_prompts: int,
+    args: argparse.Namespace,
+    cfg: EDarchConfig,
+    device: torch.device,
+    amp: AMPContext,
+    sp_decode_fn: Optional[Callable[[List[int]], str]],
+    custom_reward_fn: Optional[Callable[[GRPOPromptSample, RolloutBatch, int], float]],
+) -> dict[str, float]:
+    """검증 프롬프트들에 대해 스트리밍 롤아웃 보상·BLEU·LAAL 평균을 평가합니다."""
+    was_training = policy_model.training
+    policy_model.eval()
+    eval_n = min(len(val_dataset), max(1, max_prompts)) if max_prompts > 0 else len(val_dataset)
+    collected: List[dict[str, float]] = []
+    try:
+        for idx in range(eval_n):
+            prompt = val_dataset[idx]
+            rollout = rollout_group_trajectories(
+                model=policy_model,
+                prompt=prompt,
+                group_size=max(1, min(2, args.group_size)),
+                max_tail_sec=args.max_tail_sec,
+                rollout_cfg_coef=args.rollout_cfg_coef,
+                temp_text=max(0.2, args.temp_text * 0.5),
+                temp_audio=args.temp_audio,
+                top_k_text=args.top_k_text,
+                top_k_audio=args.top_k_audio,
+                device=device,
+                use_amp=amp.enabled,
+                amp_dtype=amp.dtype,
+            )
+            _, _, r_stats = evaluate_rollout_group_rewards(
+                prompt=prompt,
+                rollout=rollout,
+                cfg=cfg,
+                bleu_weight=args.reward_bleu_weight,
+                latency_weight=args.reward_latency_weight,
+                audio_weight=args.reward_audio_weight,
+                min_wait_frames=args.min_wait_frames,
+                sp_decode_fn=sp_decode_fn,
+                custom_reward_fn=custom_reward_fn,
+            )
+            collected.append(r_stats)
+    finally:
+        if was_training:
+            policy_model.train()
+
+    avg = _average_metric_dicts(collected)
+    return {
+        "val_reward_mean": avg.get("reward_mean", 0.0),
+        "val_bleu_mean": avg.get("bleu_mean", 0.0),
+        "val_laal_sec_mean": avg.get("laal_sec_mean", 0.0),
+    }
+
+
 def run_grpo_training(args: argparse.Namespace) -> None:
     """Stage 2 GRPO 동시통역 강화학습 전체 롤아웃·보상·정책 최적화 루프를 실행합니다."""
     if args.group_size < 2:
@@ -622,12 +718,15 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         raise ValueError(f"--grad-accum-steps({args.grad_accum_steps})는 1 이상이어야 합니다.")
 
     device = setup_device(cpu_only=args.cpu, seed=args.seed, tag="GRPO")
+    cpu_dev = torch.device("cpu")
 
     start_epoch = 1
     global_step = 0
+    best_val_reward = float("-inf")
     resume_ckpt = None
     codec_type = "external_mimi" if args.data_dir is not None else "mini_demo"
     saved_codec_state = None
+    default_sim_bin: Optional[int] = None
 
     if args.resume is not None:
         if not args.resume.exists():
@@ -638,6 +737,9 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         cfg.train_on_source_audio = False
         codec_type = resume_ckpt.get("codec_type", codec_type)
         saved_codec_state = resume_ckpt.get("codec_state_dict")
+        if resume_ckpt.get("default_sim_bin") is not None:
+            default_sim_bin = int(resume_ckpt["default_sim_bin"])
+        best_val_reward = float(resume_ckpt.get("best_val_reward", float("-inf")))
         policy_model = EDarchModel(cfg)
         policy_model.load_state_dict_for_inference(resume_ckpt["model_state_dict"])
         start_epoch = int(resume_ckpt.get("epoch", 0)) + 1
@@ -649,6 +751,8 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         cfg.train_on_source_audio = False
         codec_type = init_ckpt.get("codec_type", codec_type)
         saved_codec_state = init_ckpt.get("codec_state_dict")
+        if init_ckpt.get("default_sim_bin") is not None:
+            default_sim_bin = int(init_ckpt["default_sim_bin"])
         policy_model = EDarchModel(cfg)
         policy_model.load_state_dict_for_inference(init_ckpt["model_state_dict"])
         del init_ckpt
@@ -661,6 +765,9 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         if args.ko_vocab_size is not None:
             cfg.text_card = args.ko_vocab_size
         policy_model = EDarchModel(cfg)
+
+    if default_sim_bin is None:
+        default_sim_bin = cfg.num_speaker_sim_bins - 1
 
     ref_model: Optional[EDarchModel] = None
     ref_device = torch.device(
@@ -705,14 +812,26 @@ def run_grpo_training(args: argparse.Namespace) -> None:
 
     demo_codec: Optional[MiniMimiCodec] = None
     dataset: Optional[GRPOPromptDataset] = None
+    val_dataset: Optional[GRPOPromptDataset] = None
     if args.data_dir is not None:
         dataset = GRPOPromptDataset(
             data_dir=args.data_dir,
             crop_src_frames=args.crop_src_frames,
             cfg=cfg,
+            default_sim_bin=default_sim_bin,
         )
         prompts_per_epoch = len(dataset)
         print(f"[GRPO] 프롬프트 데이터셋 로드 완료: {prompts_per_epoch}개 샘플 (G={args.group_size})")
+
+        val_dir = getattr(args, "val_data_dir", None)
+        if val_dir is not None and val_dir.exists() and any(val_dir.rglob("*.pt")):
+            val_dataset = GRPOPromptDataset(
+                data_dir=val_dir,
+                crop_src_frames=args.crop_src_frames,
+                cfg=cfg,
+                default_sim_bin=default_sim_bin,
+            )
+            print(f"[GRPO] 검증(val) 프롬프트 로드 완료: {len(val_dataset)}개 샘플 ({val_dir})")
     else:
         demo_codec = MiniMimiCodec(cfg).to(device).eval()
         if saved_codec_state is not None:
@@ -748,13 +867,15 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         if resume_ckpt.get("scaler_state_dict") is not None and amp.scaler.is_enabled():
             amp.scaler.load_state_dict(resume_ckpt["scaler_state_dict"])
         del resume_ckpt
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     if start_epoch > args.epochs:
         print(f"[GRPO] 이미 epoch {start_epoch - 1}까지 완료되어 있습니다 (--epochs={args.epochs}).")
         return
 
-    very_good_id = cfg.num_speaker_sim_bins - 1
     last_metrics: dict[str, float] = {}
+    best_save_path = args.save_path.with_name(f"{args.save_path.stem}_best{args.save_path.suffix}")
 
     for epoch in range(start_epoch, args.epochs + 1):
         if dataset is not None:
@@ -782,7 +903,7 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                         src_start_frames=[0],
                         src_end_frames=[args.demo_src_frames],
                         ref_token_groups=[ref_toks],
-                        sim_bin=very_good_id,
+                        sim_bin=int(default_sim_bin),
                     )
 
             prompt_iter = _demo_prompts()
@@ -800,6 +921,7 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                 Optional[EDarchSequenceLogProbs],
             ]
         ] = []
+        accum_r_stats: List[dict[str, float]] = []
         optimizer.zero_grad(set_to_none=True)
 
         for step, prompt in enumerate(prompt_iter, start=1):
@@ -838,7 +960,7 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                 with torch.amp.autocast(
                     device_type=device.type, dtype=amp.dtype, enabled=amp.enabled
                 ):
-                    old_lp = policy_model.compute_token_log_probs(
+                    old_lp_gpu = policy_model.compute_token_log_probs(
                         rollout.rollout_codes,
                         speaker_sim_bins=prompt_sim_bins,
                         temp_text=args.temp_text,
@@ -848,8 +970,10 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                         eos_suppress_steps=rollout.eos_suppress_steps,
                         cfg_coef=args.rollout_cfg_coef,
                     )
+                old_lp_cpu = _move_seq_lp(old_lp_gpu, cpu_dev)
+                del old_lp_gpu
 
-                ref_lp = None
+                ref_lp_cpu: Optional[EDarchSequenceLogProbs] = None
                 if ref_model is not None and args.kl_coef > 0.0:
                     ref_codes = rollout.rollout_codes.to(ref_device)
                     ref_bins = prompt_sim_bins.to(ref_device)
@@ -857,7 +981,7 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                     with torch.amp.autocast(
                         device_type=ref_device.type, dtype=amp.dtype, enabled=use_ref_amp
                     ):
-                        ref_lp = ref_model.compute_token_log_probs(
+                        ref_lp_raw = ref_model.compute_token_log_probs(
                             ref_codes,
                             speaker_sim_bins=ref_bins,
                             temp_text=args.temp_text,
@@ -867,17 +991,20 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                             eos_suppress_steps=rollout.eos_suppress_steps,
                             cfg_coef=args.rollout_cfg_coef,
                         )
+                    ref_lp_cpu = _move_seq_lp(ref_lp_raw, cpu_dev)
+                    del ref_lp_raw, ref_codes, ref_bins
 
             rollout_buffer.append(
                 (
-                    rollout.rollout_codes,
-                    prompt_sim_bins,
+                    rollout.rollout_codes.detach().cpu(),
+                    prompt_sim_bins.detach().cpu(),
                     rollout.eos_suppress_steps,
-                    advantages,
-                    old_lp,
-                    ref_lp,
+                    advantages.detach().cpu(),
+                    old_lp_cpu,
+                    ref_lp_cpu,
                 )
             )
+            accum_r_stats.append(r_stats)
             epoch_reward_sum += r_stats["reward_mean"]
             epoch_bleu_sum += r_stats["bleu_mean"]
             epoch_laal_sum += r_stats["laal_sec_mean"]
@@ -885,81 +1012,130 @@ def run_grpo_training(args: argparse.Namespace) -> None:
             is_last_prompt = step == prompts_per_epoch
             should_step_opt = (len(rollout_buffer) >= args.grad_accum_steps) or is_last_prompt
 
-            step_loss_metrics: dict[str, float] = {}
             if should_step_opt:
-                policy_model.train()
-                accum_denom = float(len(rollout_buffer))
-                for _ in range(args.ppo_epochs):
-                    optimizer.zero_grad(set_to_none=True)
-                    for (
-                        buf_codes,
-                        buf_sim_bins,
-                        buf_eos_sup,
-                        buf_adv,
-                        buf_old_lp,
-                        buf_ref_lp,
-                    ) in rollout_buffer:
-                        with torch.amp.autocast(
-                            device_type=device.type, dtype=amp.dtype, enabled=amp.enabled
+                all_zero_adv = args.kl_coef <= 0.0 and all(
+                    float(b_adv.abs().max().item()) < 1e-8
+                    for _, _, _, b_adv, _, _ in rollout_buffer
+                )
+                avg_r_stats = _average_metric_dicts(accum_r_stats)
+
+                if all_zero_adv:
+                    step_loss_metrics = {
+                        "loss": 0.0,
+                        "text_pg": 0.0,
+                        "audio_pg": 0.0,
+                        "text_kl": 0.0,
+                        "audio_kl": 0.0,
+                    }
+                else:
+                    policy_model.train()
+                    accum_denom = float(len(rollout_buffer))
+                    collected_losses: List[dict[str, float]] = []
+                    for _ in range(args.ppo_epochs):
+                        optimizer.zero_grad(set_to_none=True)
+                        collected_losses.clear()
+                        for (
+                            buf_codes_cpu,
+                            buf_bins_cpu,
+                            buf_eos_sup,
+                            buf_adv_cpu,
+                            buf_old_lp_cpu,
+                            buf_ref_lp_cpu,
+                        ) in rollout_buffer:
+                            buf_codes = buf_codes_cpu.to(device, non_blocking=True)
+                            buf_bins = buf_bins_cpu.to(device, non_blocking=True)
+                            with torch.amp.autocast(
+                                device_type=device.type, dtype=amp.dtype, enabled=amp.enabled
+                            ):
+                                loss, loss_metrics = compute_grpo_loss(
+                                    policy_model=policy_model,
+                                    rollout_codes=buf_codes,
+                                    sim_bins=buf_bins,
+                                    advantages=buf_adv_cpu,
+                                    old_lp=buf_old_lp_cpu,
+                                    ref_lp=buf_ref_lp_cpu,
+                                    clip_eps=args.clip_eps,
+                                    kl_coef=args.kl_coef,
+                                    audio_pg_weight=args.audio_pg_weight,
+                                    temp_text=args.temp_text,
+                                    temp_audio=args.temp_audio,
+                                    top_k_text=args.top_k_text,
+                                    top_k_audio=args.top_k_audio,
+                                    eos_suppress_steps=buf_eos_sup,
+                                    cfg_coef=args.rollout_cfg_coef,
+                                )
+                                scaled_loss = loss / accum_denom
+
+                            if amp.scaler.is_enabled():
+                                amp.scaler.scale(scaled_loss).backward()
+                            else:
+                                scaled_loss.backward()
+                            collected_losses.append(loss_metrics)
+                            del buf_codes, buf_bins
+
+                        if step_optimizer_with_clip(
+                            model=policy_model,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            scaler=amp.scaler,
+                            grad_clip=args.grad_clip,
                         ):
-                            loss, loss_metrics = compute_grpo_loss(
-                                policy_model=policy_model,
-                                rollout_codes=buf_codes,
-                                sim_bins=buf_sim_bins,
-                                advantages=buf_adv,
-                                old_lp=buf_old_lp,
-                                ref_lp=buf_ref_lp,
-                                clip_eps=args.clip_eps,
-                                kl_coef=args.kl_coef,
-                                audio_pg_weight=args.audio_pg_weight,
-                                temp_text=args.temp_text,
-                                temp_audio=args.temp_audio,
-                                top_k_text=args.top_k_text,
-                                top_k_audio=args.top_k_audio,
-                                eos_suppress_steps=buf_eos_sup,
-                                cfg_coef=args.rollout_cfg_coef,
-                            )
-                            scaled_loss = loss / accum_denom
+                            global_step += 1
 
-                        if amp.scaler.is_enabled():
-                            amp.scaler.scale(scaled_loss).backward()
-                        else:
-                            scaled_loss.backward()
-                        step_loss_metrics = loss_metrics
-
-                    if step_optimizer_with_clip(
-                        model=policy_model,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        scaler=amp.scaler,
-                        grad_clip=args.grad_clip,
-                    ):
-                        global_step += 1
+                    step_loss_metrics = _average_metric_dicts(collected_losses)
 
                 rollout_buffer.clear()
-                last_metrics = {**r_stats, **step_loss_metrics}
+                accum_r_stats.clear()
+                last_metrics = {**avg_r_stats, **step_loss_metrics}
 
                 if step == 1 or step % 5 == 0 or is_last_prompt:
                     cur_lr = optimizer.param_groups[0]["lr"]
                     print(
                         f"  [Epoch {epoch}/{args.epochs} | Prompt {step}/{prompts_per_epoch} (opt={global_step})] "
-                        f"R={r_stats['reward_mean']:.3f}±{r_stats['reward_std']:.3f} | "
-                        f"BLEU={r_stats['bleu_mean']:.3f} | LAAL={r_stats['laal_sec_mean']:.2f}s | "
+                        f"R={avg_r_stats['reward_mean']:.3f}±{avg_r_stats['reward_std']:.3f} | "
+                        f"BLEU={avg_r_stats['bleu_mean']:.3f} | LAAL={avg_r_stats['laal_sec_mean']:.2f}s | "
                         f"KL={step_loss_metrics['text_kl']:.4f} | loss={step_loss_metrics['loss']:.4f} | lr={cur_lr:.2e}"
                     )
 
         n_p = float(max(1, prompts_per_epoch))
+        val_msg = ""
+        improved_val = False
+        if val_dataset is not None:
+            val_stats = _evaluate_grpo_validation(
+                policy_model=policy_model,
+                val_dataset=val_dataset,
+                max_prompts=getattr(args, "max_val_prompts", 32),
+                args=args,
+                cfg=cfg,
+                device=device,
+                amp=amp,
+                sp_decode_fn=sp_decode_fn,
+                custom_reward_fn=custom_reward_fn,
+            )
+            last_metrics.update(val_stats)
+            val_r = val_stats["val_reward_mean"]
+            val_msg = (
+                f" | val_R={val_r:.4f} (val_BLEU={val_stats['val_bleu_mean']:.4f}, "
+                f"val_LAAL={val_stats['val_laal_sec_mean']:.2f}s)"
+            )
+            if val_r > best_val_reward:
+                best_val_reward = val_r
+                improved_val = True
+
         print(
             f"[Epoch {epoch}/{args.epochs} 완료] "
             f"avg_reward={epoch_reward_sum / n_p:.4f} | "
             f"avg_BLEU={epoch_bleu_sum / n_p:.4f} | "
-            f"avg_LAAL={epoch_laal_sum / n_p:.2f}s"
+            f"avg_LAAL={epoch_laal_sum / n_p:.2f}s{val_msg}"
         )
 
         checkpoint = {
             "config": asdict(cfg),
             "stage": "grpo_stage2",
             "codec_type": codec_type,
+            "rollout_cfg_coef": float(args.rollout_cfg_coef),
+            "default_sim_bin": int(default_sim_bin),
+            "best_val_reward": best_val_reward,
             "model_state_dict": policy_model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
@@ -974,5 +1150,8 @@ def run_grpo_training(args: argparse.Namespace) -> None:
             checkpoint["codec_state_dict"] = saved_codec_state
         atomic_torch_save(checkpoint, args.save_path)
         print(f"  -> Stage 2 GRPO 체크포인트 저장됨: {args.save_path}")
+        if improved_val:
+            atomic_torch_save(checkpoint, best_save_path)
+            print(f"  -> 최고 검증 성능(val_R={best_val_reward:.4f}) 갱신 저장됨: {best_save_path}")
 
     print(f"\n[Done] Stage 2 GRPO 강화학습 완료 (최종 체크포인트: {args.save_path})")

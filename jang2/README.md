@@ -10,11 +10,12 @@
 
 ---
 
-## 1. 프로젝트 디렉터리 및 모듈 구조 (총 19개 파이썬 모듈)
+## 1. 프로젝트 디렉터리 및 모듈 구조 (총 22개 파이썬 모듈)
 
 ```text
 jang2/
-├── preprocessing.py                # [실행 전용] AI-Hub 71693 & 71379 정밀 전처리 진입점
+├── preprocessing.py                # [실행 전용] AI-Hub 71693 & 71379 유연 경로 전처리 진입점
+├── preprocess_datasets.py          # [실행 전용] AI-Hub 71693 & 71379 표준 Training/Validation 분할 일괄 전처리 진입점
 ├── train.py                        # [실행 전용] Stage 1 문장 단위 지도학습(SFT) 진입점
 ├── train_grpo.py                   # [실행 전용] Stage 2 GRPO 동시통역 강화학습 진입점
 ├── run.py                          # [실행 전용] 실시간 스트리밍 음성·텍스트 추론 진입점
@@ -25,15 +26,17 @@ jang2/
     ├── env.py                      # 가상환경 부트스트랩, 디바이스 설정, 원자적 저장(atomic_torch_save), 공통 CLI 인자
     ├── cli.py                      # 가상환경 재실행 전 동작하는 순수 표준 라이브러리 기반 CLI ArgumentParser 빌더
     ├── config.py                   # EDarchConfig (1B/2B 프리셋, 스트림 수, 음향 딜레이 규격)
-    ├── tokenizer.py                # 한국어 SentencePiece(.model) 토크나이저 학습·로더 및 AI-Hub 코퍼스 추출기
+    ├── tokenizer.py                # 한국어 SentencePiece(.model) 토크나이저 학습·로더 및 공통 텍스트/JSON 정규화기
     ├── layers.py                   # RMSNormFP32, RoPE, SwiGLU, StepIndexed 모듈, KV 캐시, 딜레이 연산, 화자 조건화
     ├── codec.py                    # 통합 WAV 로더/리샘플러, CausalConv, Split RVQ, MiniMimiCodec, ExternalMimiCodec
     ├── model.py                    # EDarchModel (Temporal + Depformer, SFT 손실, GRPO 로그확률), 한국어 어휘 어댑테이션
     ├── optim.py                    # 통합 AMP 컨텍스트, 임베딩 제외 AdamW 파라미터 그룹, Warmup-Cosine 스케줄러, Grad Clip 스텝
-    ├── alignment.py                # Inner Monologue 정밀 정렬(Energy VAD / Whisper / CTC Viterbi) 및 WavLM 화자 유사도 훅
-    ├── preprocessing_pipeline.py   # AI-Hub 71693·71379 파서, 윈도우 슬라이서, 멀티스트림 .pt 빌더, 통합 전처리 파이프라인
-    ├── training.py                 # PreprocessedPtDataset, CollatePad, Stage 1 SFT 학습 루프(run_sft_training)
-    ├── grpo.py                     # GRPO 롤아웃 생성기, Smoothed/Process BLEU + LAAL 보상 평가기, Stage 2 학습 루프
+    ├── alignment.py                # Inner Monologue 정밀 정렬(Energy VAD / Whisper / 벡터화 CTC Viterbi) 및 WavLM 화자 유사도
+    ├── preprocessing_common.py     # [공통 전처리 코어] 발화 구조체, 슬라이서, MMS/Edge TTS, 오버랩 Mimi 인코딩, 타임라인 조립기
+    ├── preprocessing_pipeline.py   # 단일/복합 디렉터리 유연 전처리 파이프라인 (preprocessing_common 기반)
+    ├── dataset_builder.py          # Training/Validation 저메모리 배치 분할 전처리 빌더 (preprocessing_common 기반)
+    ├── training.py                 # PreprocessedPtDataset, CollatePad, 검증 평가 및 Stage 1 SFT 학습 루프(run_sft_training)
+    ├── grpo.py                     # GRPO 롤아웃 생성기, Smoothed/Process BLEU + 실시간 LAAL 보상 평가기, Stage 2 학습 루프
     └── streaming.py                # EDarchStreamingGenerator, 실시간 스트리밍 추론(run_streaming_inference), 모델 무결성 검증
 ```
 
@@ -41,9 +44,10 @@ jang2/
 
 | 실행 파일 | 위임 대상 라이브러리 함수 | 핵심 역할 |
 | :--- | :--- | :--- |
-| [`preprocessing.py`](./preprocessing.py) | `libs.preprocessing_pipeline.run_preprocessing` | AI-Hub 71693·71379 데이터 파싱, SentencePiece 자동 구축, 정밀 정렬 `.pt` 생성 |
-| [`train.py`](./train.py) | `libs.training.run_sft_training` | Stage 1 문장 단위 인과 정렬 지도학습(SFT) 실행 및 `EDarch_ckpt.pt` 저장 |
-| [`train_grpo.py`](./train_grpo.py) | `libs.grpo.run_grpo_training` | Stage 2 GRPO 그룹 롤아웃 저지연 강화학습 실행 및 `EDarch_grpo_ckpt.pt` 저장 |
+| [`preprocessing.py`](./preprocessing.py) | `libs.preprocessing_pipeline.run_preprocessing` | 단일·복합 폴더 기준 AI-Hub 71693·71379 데이터 파싱 및 정밀 정렬 `.pt` 생성 |
+| [`preprocess_datasets.py`](./preprocess_datasets.py) | `libs.dataset_builder.run_d_drive_preprocessing` | AI-Hub 표준 `Training`/`Validation` 폴더 구조를 자동 탐색해 저메모리로 `train`/`val` 분할 `.pt` 일괄 구축 |
+| [`train.py`](./train.py) | `libs.training.run_sft_training` | Stage 1 문장 단위 인과 정렬 지도학습(SFT), 검증(`--val-data-dir`) 및 `EDarch_ckpt.pt` 저장 |
+| [`train_grpo.py`](./train_grpo.py) | `libs.grpo.run_grpo_training` | Stage 2 GRPO 그룹 롤아웃 저지연 강화학습, 검증(`--val-data-dir`) 및 `EDarch_grpo_ckpt.pt` 저장 |
 | [`run.py`](./run.py) | `libs.streaming.run_streaming_inference` | 학습된 체크포인트 기반 실시간 영어→한국어 음성 합성 및 번역문 출력 |
 | [`verify.py`](./verify.py) | `libs.tokenizer.run_tokenizer_self_test`, `libs.streaming.run_bottom_up_verification` | 한국어 SentencePiece 토크나이저 검증/학습(`tokenizer`, `train-tokenizer`) 및 코어 모델 검증(`model`, `all`) |
 

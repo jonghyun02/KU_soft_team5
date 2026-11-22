@@ -90,6 +90,7 @@ class EDarchStreamingGenerator:
             if sim_bin is None
             else max(0, min(self.cfg.num_speaker_sim_bins - 1, int(sim_bin)))
         )
+        self.sim_bin = resolved_sim_bin
         cond_bins = torch.full(
             (batch_size,), resolved_sim_bin, dtype=torch.long, device=device
         )
@@ -218,21 +219,39 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
 
     ckpt = None
     if args.checkpoint is not None and args.checkpoint.exists():
-        print(f"[Infer] 체크포인트 로드 중: {args.checkpoint}")
-        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=True)
+        print(f"[Infer] 체크포인트 로드 중(CPU): {args.checkpoint}")
+        ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
         cfg = EDarchConfig.from_dict(ckpt["config"])
         cfg.train_on_source_audio = False
-        model = EDarchModel(cfg).to(device)
+        model = EDarchModel(cfg)
         model.load_state_dict_for_inference(ckpt["model_state_dict"])
+        model = model.to(device)
     else:
         print(f"[Infer] 체크포인트 없음 -> '{args.preset}' 프리셋으로 새 모델 초기화")
         cfg = EDarchConfig.from_preset(args.preset)
         cfg.train_on_source_audio = False
         model = EDarchModel(cfg).to(device)
 
+    raw_cfg_coef = getattr(args, "cfg_coef", None)
+    if raw_cfg_coef is not None:
+        resolved_cfg_coef = float(raw_cfg_coef)
+    elif ckpt is not None and ckpt.get("stage") == "grpo_stage2":
+        resolved_cfg_coef = float(ckpt.get("rollout_cfg_coef", 1.0))
+    else:
+        resolved_cfg_coef = 3.0
+
+    raw_sim_bin = getattr(args, "sim_bin", None)
+    if raw_sim_bin is not None:
+        resolved_sim_bin: Optional[int] = int(raw_sim_bin)
+    elif ckpt is not None and ckpt.get("default_sim_bin") is not None:
+        resolved_sim_bin = int(ckpt["default_sim_bin"])
+    else:
+        resolved_sim_bin = None
+
     codec = resolve_inference_codec(
         cfg=cfg, device=device, mimi_model_id=args.mimi_model, ckpt=ckpt
     )
+    del ckpt
     model.eval()
 
     sp_proc = None
@@ -287,11 +306,12 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
     streamer = EDarchStreamingGenerator(
         model,
         batch_size=1,
-        cfg_coef=args.cfg_coef,
+        cfg_coef=resolved_cfg_coef,
         temp_audio=args.temp_audio,
         temp_text=args.temp_text,
         top_k_audio=args.top_k_audio,
         top_k_text=args.top_k_text,
+        sim_bin=resolved_sim_bin,
     )
 
     emitted_texts: list[int] = []
@@ -299,7 +319,9 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
 
     amp = resolve_amp_context(device=device, no_amp=args.no_amp)
     max_tail_frames = max(1, int(args.max_tail_sec * cfg.frame_rate)) + streamer.max_delay
+    eos_tail_frames = max(0, int(getattr(args, "eos_tail_frames", 2)))
     eos_reached = False
+    remaining_after_eos = 0
 
     for t in range(num_frames):
         chunk = src_codes[:, :, t : t + 1]
@@ -319,12 +341,19 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
             step_out = streamer.step(silence_code, suppress_eos=False)
         if step_out is not None:
             t_tok, a_tok = step_out
-            tok_id = int(t_tok[0, 0].item())
-            emitted_texts.append(tok_id)
             emitted_audio_frames.append(a_tok)
-            if tok_id == cfg.text_eos_id:
-                eos_reached = True
-                break
+            if not eos_reached:
+                tok_id = int(t_tok[0, 0].item())
+                emitted_texts.append(tok_id)
+                if tok_id == cfg.text_eos_id:
+                    eos_reached = True
+                    remaining_after_eos = eos_tail_frames
+                    if remaining_after_eos <= 0:
+                        break
+            else:
+                remaining_after_eos -= 1
+                if remaining_after_eos <= 0:
+                    break
 
     pred_audio_codes = torch.cat(emitted_audio_frames, dim=-1)
     with torch.no_grad():
@@ -336,7 +365,9 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
     non_pad_tokens = [tid for tid in emitted_texts if tid != cfg.text_pad_id]
     stop_reason = "EOS 감지" if eos_reached else f"최대 꼬리 길이({args.max_tail_sec}s) 도달"
     print(
-        f"[Done] 스트리밍 추론 완료 ({len(emitted_texts)}프레임, CFG={args.cfg_coef}, 종료={stop_reason})"
+        f"[Done] 스트리밍 추론 완료 "
+        f"(텍스트={len(emitted_texts)}프레임, 오디오={len(emitted_audio_frames)}프레임, "
+        f"CFG={resolved_cfg_coef}, sim_bin={streamer.sim_bin}, 종료={stop_reason})"
     )
     print(f"  - 전체 Inner Monologue 토큰 (앞 30개): {emitted_texts[:30]}")
     print(f"  - 비-PAD 토큰 수: {len(non_pad_tokens)} / {len(emitted_texts)}")
@@ -408,7 +439,6 @@ def run_bottom_up_verification(preset: str = "1b") -> None:
     )
 
     model.eval()
-    model.apply_early_eos_suppression_()
     streamer = EDarchStreamingGenerator(model, batch_size=1, cfg_coef=3.0)
 
     emitted_texts: list[int] = []
@@ -417,8 +447,9 @@ def run_bottom_up_verification(preset: str = "1b") -> None:
     for t in range(num_frames + streamer.max_delay):
         t_clamped = min(t, num_frames - 1)
         chunk_codes = src_codes[:1, :, t_clamped : t_clamped + 1]
+        is_src_step = t < num_frames
         with torch.amp.autocast(device_type=device.type, dtype=model_dtype, enabled=use_cuda):
-            step_out = streamer.step(chunk_codes)
+            step_out = streamer.step(chunk_codes, suppress_eos=is_src_step)
         if step_out is not None:
             t_tok, a_tok = step_out
             emitted_texts.append(int(t_tok[0, 0].item()))

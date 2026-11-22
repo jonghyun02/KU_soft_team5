@@ -1,0 +1,20 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+EDarch_venv/
+
+# Checkpoints, outputs, and temporary files
+checkpoints/
+outputs/
+data_pt/
+.edge_tts_cache/
+*.pt
+*.pt.tmp
+*.tmp
+*.model
+*.vocab
