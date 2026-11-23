@@ -133,6 +133,51 @@ def _build_schedule_runs(schedule: Optional[list[int]]) -> list[tuple[int, int, 
     return runs
 
 
+def _init_step_schedule(
+    schedule: Optional[list[int]],
+) -> tuple[Optional[list[int]], list[tuple[int, int, int]], int]:
+    """스텝 스케줄의 유효성을 검증하고 연속 실행 구간 리스트와 필요한 가중치 개수를 반환합니다."""
+    if schedule is not None and len(schedule) == 0:
+        raise ValueError("schedule은 빈 리스트일 수 없습니다.")
+    runs = _build_schedule_runs(schedule)
+    num_weights = (max(schedule) + 1) if schedule is not None else 1
+    return schedule, runs, num_weights
+
+
+def _forward_step_indexed(
+    modules: nn.ModuleList,
+    schedule: Optional[list[int]],
+    runs: list[tuple[int, int, int]],
+    x: torch.Tensor,
+    step_idx: Optional[int] = None,
+) -> torch.Tensor:
+    """단일 스텝(`step_idx`) 또는 전체 스텝 시퀀스에 대해 스케줄된 모듈 리스트를 적용합니다."""
+    if schedule is None:
+        return modules[0](x)
+
+    if step_idx is not None:
+        if step_idx < 0 or step_idx >= len(schedule):
+            raise ValueError(
+                f"step_idx({step_idx})가 schedule 범위(0..{len(schedule) - 1})를 벗어났습니다."
+            )
+        return modules[schedule[step_idx]](x)
+
+    seq_len = x.shape[1]
+    if seq_len > len(schedule):
+        raise ValueError(
+            f"입력 길이({seq_len})가 schedule 길이({len(schedule)})를 초과합니다."
+        )
+    outputs: list[torch.Tensor] = []
+    for start, end, w_idx in runs:
+        if start >= seq_len:
+            break
+        seg_end = min(end, seq_len)
+        outputs.append(modules[w_idx](x[:, start:seg_end, :]))
+    if len(outputs) == 1:
+        return outputs[0]
+    return torch.cat(outputs, dim=1)
+
+
 class StepIndexedLinear(nn.Module):
     """Depformer 코드북 스텝 스케줄에 따라 가중치를 공유하거나 분리 적용하는 선형 레이어입니다."""
 
@@ -141,11 +186,7 @@ class StepIndexedLinear(nn.Module):
     ):
         """스케줄에서 요구하는 고유 가중치 개수만큼 선형 모듈 리스트를 생성합니다."""
         super().__init__()
-        if schedule is not None and len(schedule) == 0:
-            raise ValueError("schedule은 빈 리스트일 수 없습니다.")
-        self.schedule = schedule
-        self._runs = _build_schedule_runs(schedule)
-        num_weights = (max(schedule) + 1) if schedule is not None else 1
+        self.schedule, self._runs, num_weights = _init_step_schedule(schedule)
         self.linears = nn.ModuleList(
             [nn.Linear(in_features, out_features, bias=False) for _ in range(num_weights)]
         )
@@ -154,30 +195,9 @@ class StepIndexedLinear(nn.Module):
         self, x: torch.Tensor, step_idx: Optional[int] = None
     ) -> torch.Tensor:
         """단일 스텝(`step_idx`) 또는 전체 스텝 시퀀스에 대해 스케줄된 선형 변환을 적용합니다."""
-        if self.schedule is None:
-            return self.linears[0](x)
-
-        if step_idx is not None:
-            if step_idx < 0 or step_idx >= len(self.schedule):
-                raise ValueError(
-                    f"step_idx({step_idx})가 schedule 범위(0..{len(self.schedule) - 1})를 벗어났습니다."
-                )
-            return self.linears[self.schedule[step_idx]](x)
-
-        seq_len = x.shape[1]
-        if seq_len > len(self.schedule):
-            raise ValueError(
-                f"입력 길이({seq_len})가 schedule 길이({len(self.schedule)})를 초과합니다."
-            )
-        outputs: list[torch.Tensor] = []
-        for start, end, w_idx in self._runs:
-            if start >= seq_len:
-                break
-            seg_end = min(end, seq_len)
-            outputs.append(self.linears[w_idx](x[:, start:seg_end, :]))
-        if len(outputs) == 1:
-            return outputs[0]
-        return torch.cat(outputs, dim=1)
+        return _forward_step_indexed(
+            self.linears, self.schedule, self._runs, x, step_idx=step_idx
+        )
 
 
 class StepIndexedSwiGLU(nn.Module):
@@ -188,11 +208,7 @@ class StepIndexedSwiGLU(nn.Module):
     ):
         """스케줄에서 요구하는 고유 가중치 개수만큼 SwiGLUFFN 모듈 리스트를 생성합니다."""
         super().__init__()
-        if schedule is not None and len(schedule) == 0:
-            raise ValueError("schedule은 빈 리스트일 수 없습니다.")
-        self.schedule = schedule
-        self._runs = _build_schedule_runs(schedule)
-        num_weights = (max(schedule) + 1) if schedule is not None else 1
+        self.schedule, self._runs, num_weights = _init_step_schedule(schedule)
         self.ffns = nn.ModuleList(
             [SwiGLUFFN(dim, hidden_dim) for _ in range(num_weights)]
         )
@@ -201,30 +217,9 @@ class StepIndexedSwiGLU(nn.Module):
         self, x: torch.Tensor, step_idx: Optional[int] = None
     ) -> torch.Tensor:
         """단일 스텝(`step_idx`) 또는 전체 스텝 시퀀스에 대해 스케줄된 SwiGLU FFN을 적용합니다."""
-        if self.schedule is None:
-            return self.ffns[0](x)
-
-        if step_idx is not None:
-            if step_idx < 0 or step_idx >= len(self.schedule):
-                raise ValueError(
-                    f"step_idx({step_idx})가 schedule 범위(0..{len(self.schedule) - 1})를 벗어났습니다."
-                )
-            return self.ffns[self.schedule[step_idx]](x)
-
-        seq_len = x.shape[1]
-        if seq_len > len(self.schedule):
-            raise ValueError(
-                f"입력 길이({seq_len})가 schedule 길이({len(self.schedule)})를 초과합니다."
-            )
-        outputs: list[torch.Tensor] = []
-        for start, end, w_idx in self._runs:
-            if start >= seq_len:
-                break
-            seg_end = min(end, seq_len)
-            outputs.append(self.ffns[w_idx](x[:, start:seg_end, :]))
-        if len(outputs) == 1:
-            return outputs[0]
-        return torch.cat(outputs, dim=1)
+        return _forward_step_indexed(
+            self.ffns, self.schedule, self._runs, x, step_idx=step_idx
+        )
 
 
 @dataclass

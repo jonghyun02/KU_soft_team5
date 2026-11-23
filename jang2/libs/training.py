@@ -6,7 +6,7 @@ import argparse
 from dataclasses import asdict
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from torch.utils.data import DataLoader
@@ -22,6 +22,55 @@ from libs.optim import (
     resolve_amp_context,
     step_optimizer_with_clip,
 )
+
+
+def list_preprocessed_pt_files(data_dir: Path) -> list[Path]:
+    """지정된 디렉터리 하위에서 정렬된 `.pt` 학습 파일 목록을 수집해 반환합니다."""
+    files = sorted(data_dir.rglob("*.pt"))
+    if not files:
+        raise FileNotFoundError(f"{data_dir}에서 .pt 학습 파일을 찾지 못했습니다.")
+    return files
+
+
+def load_and_validate_pt_item(
+    path: Path,
+    expected_total_streams: int,
+    default_sim_bin: int,
+    num_speaker_sim_bins: int = 5,
+    text_card: Optional[int] = None,
+    audio_card: Optional[int] = None,
+    validate_ranges: bool = True,
+) -> tuple[dict[str, Any], torch.Tensor, int]:
+    """단일 `.pt` 파일을 로드하고 스트림 차원, 토큰 범위 및 화자 유사도 구간을 검증합니다."""
+    item = torch.load(path, map_location="cpu", weights_only=True)
+    codes = item["codes"].long()
+    sim_bin = int(item.get("sim_bin", default_sim_bin))
+    if codes.ndim != 2 or codes.shape[0] != expected_total_streams:
+        raise ValueError(
+            f"데이터 스트림 수 불일치 ({path.name}): 기대 [K={expected_total_streams}, T], "
+            f"실제 {tuple(codes.shape)}. --preset 설정(1b는 17, 2b는 33)을 확인하세요."
+        )
+    if validate_ranges:
+        if text_card is not None:
+            t_min, t_max = int(codes[0].min().item()), int(codes[0].max().item())
+            if t_min < -1 or t_max >= text_card:
+                raise ValueError(
+                    f"텍스트 토큰 범위 초과 ({path.name}): [{t_min}, {t_max}], "
+                    f"허용 [-1, {text_card - 1}]. --ko-vocab-size 옵션을 확인하세요."
+                )
+        if audio_card is not None:
+            a_min, a_max = int(codes[1:].min().item()), int(codes[1:].max().item())
+            if a_min < -1 or a_max >= audio_card:
+                raise ValueError(
+                    f"오디오 코드북 범위 초과 ({path.name}): [{a_min}, {a_max}], "
+                    f"허용 [-1, {audio_card - 1}]. --preset(1b/2b는 audio_card=2048)을 확인하세요."
+                )
+        if sim_bin < 0 or sim_bin >= num_speaker_sim_bins:
+            raise ValueError(
+                f"화자 유사도 sim_bin 범위 초과 ({path.name}): {sim_bin}, "
+                f"허용 [0, {num_speaker_sim_bins - 1}]."
+            )
+    return item, codes, sim_bin
 
 
 class PreprocessedPtDataset:
@@ -41,9 +90,7 @@ class PreprocessedPtDataset:
         """디렉터리 내 `.pt` 파일 목록을 수집하고 첫 샘플의 차원·토큰 범위 정합성을 검증합니다."""
         if crop_frames < 1:
             raise ValueError(f"crop_frames({crop_frames})는 1 이상이어야 합니다.")
-        self.files = sorted(data_dir.rglob("*.pt"))
-        if not self.files:
-            raise FileNotFoundError(f"{data_dir}에서 .pt 학습 파일을 찾지 못했습니다.")
+        self.files = list_preprocessed_pt_files(data_dir)
         self.crop_frames = crop_frames
         self.expected_total_streams = expected_total_streams
         self.text_card = text_card
@@ -54,53 +101,31 @@ class PreprocessedPtDataset:
         self._validated_indices: set[int] = set()
         self._warned_crop_eos = False
 
-        first_codes, first_sim_bin = self._load_raw(0)
-        self._validate_once(0, first_codes, first_sim_bin)
+        _ = self._load_and_validate(0)
 
     def __len__(self) -> int:
         """전체 학습 샘플 개수를 반환합니다."""
         return len(self.files)
 
-    def _load_raw(self, idx: int) -> tuple[torch.Tensor, int]:
-        """지정된 인덱스의 `.pt` 파일에서 `codes` 텐서와 `sim_bin` 정수를 로드합니다."""
-        item = torch.load(self.files[idx], map_location="cpu", weights_only=True)
-        codes = item["codes"].long()
-        sim_bin = int(item.get("sim_bin", self.default_sim_bin))
+    def _load_and_validate(self, idx: int) -> tuple[torch.Tensor, int]:
+        """지정된 인덱스의 `.pt` 샘플을 로드하고 최초 접근 시 범위 정합성을 검증합니다."""
+        need_val = idx not in self._validated_indices
+        _, codes, sim_bin = load_and_validate_pt_item(
+            path=self.files[idx],
+            expected_total_streams=self.expected_total_streams,
+            default_sim_bin=self.default_sim_bin,
+            num_speaker_sim_bins=self.num_speaker_sim_bins,
+            text_card=self.text_card,
+            audio_card=self.audio_card,
+            validate_ranges=need_val,
+        )
+        if need_val:
+            self._validated_indices.add(idx)
         return codes, sim_bin
-
-    def _validate_once(self, idx: int, codes: torch.Tensor, sim_bin: int) -> None:
-        """샘플 최초 접근 시 스트림 수, 텍스트·오디오 토큰 범위 및 화자 유사도 구간을 검증합니다."""
-        if idx in self._validated_indices:
-            return
-        path = self.files[idx]
-        if codes.ndim != 2 or codes.shape[0] != self.expected_total_streams:
-            raise ValueError(
-                f"데이터 스트림 수 불일치 ({path.name}): 기대 [K={self.expected_total_streams}, T], "
-                f"실제 {tuple(codes.shape)}. --preset 설정(1b는 17, 2b는 33)을 확인하세요."
-            )
-        t_min, t_max = int(codes[0].min().item()), int(codes[0].max().item())
-        if t_min < -1 or t_max >= self.text_card:
-            raise ValueError(
-                f"텍스트 토큰 범위 초과 ({path.name}): [{t_min}, {t_max}], "
-                f"허용 [-1, {self.text_card - 1}]. --ko-vocab-size 옵션을 확인하세요."
-            )
-        a_min, a_max = int(codes[1:].min().item()), int(codes[1:].max().item())
-        if a_min < -1 or a_max >= self.audio_card:
-            raise ValueError(
-                f"오디오 코드북 범위 초과 ({path.name}): [{a_min}, {a_max}], "
-                f"허용 [-1, {self.audio_card - 1}]. --preset(1b/2b는 audio_card=2048)을 확인하세요."
-            )
-        if sim_bin < 0 or sim_bin >= self.num_speaker_sim_bins:
-            raise ValueError(
-                f"화자 유사도 sim_bin 범위 초과 ({path.name}): {sim_bin}, "
-                f"허용 [0, {self.num_speaker_sim_bins - 1}]."
-            )
-        self._validated_indices.add(idx)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         """인덱스에 해당하는 멀티스트림 시퀀스와 화자 유사도 구간을 반환합니다."""
-        codes, sim_bin = self._load_raw(idx)
-        self._validate_once(idx, codes, sim_bin)
+        codes, sim_bin = self._load_and_validate(idx)
         if codes.shape[1] > self.crop_frames:
             if (
                 not self._warned_crop_eos

@@ -13,7 +13,6 @@ import sentencepiece as spm
 
 TEXT_UNK_ID = 0
 SPM_BOS_ID = 1
-TEXT_BOS_ID = SPM_BOS_ID  # 하위 호환 별칭 (주의: 멀티스트림 시작 토큰은 EDarchConfig.text_bos_id == text_card)
 TEXT_EOS_ID = 2
 TEXT_PAD_ID = 3
 
@@ -177,7 +176,7 @@ def train_korean_sentencepiece(
                     model_type=model_type,
                     byte_fallback=use_byte_fb,
                     unk_id=TEXT_UNK_ID,
-                    bos_id=TEXT_BOS_ID,
+                    bos_id=SPM_BOS_ID,
                     eos_id=TEXT_EOS_ID,
                     pad_id=TEXT_PAD_ID,
                     hard_vocab_limit=False,
@@ -216,7 +215,7 @@ def train_korean_sentencepiece(
     proc = load_korean_tokenizer(final_model_path)
     if (
         proc.unk_id() != TEXT_UNK_ID
-        or proc.bos_id() != TEXT_BOS_ID
+        or proc.bos_id() != SPM_BOS_ID
         or proc.eos_id() != TEXT_EOS_ID
         or proc.pad_id() != TEXT_PAD_ID
     ):
@@ -315,13 +314,6 @@ def classify_71379_accent(t_code_raw: str, en_wav_name: str, json_name: str) -> 
     return None
 
 
-# 하위 호환 내부 별칭
-_clean_text_field = clean_transcript_text
-_normalize_record_keys = normalize_record_keys
-_extract_json_records = extract_json_records
-_classify_71379_accent = classify_71379_accent
-
-
 def extract_korean_sentences_from_path(
     input_path: Path,
     use_mt_fallback: bool = False,
@@ -351,26 +343,22 @@ def extract_korean_sentences_from_path(
         except (OSError, json.JSONDecodeError):
             continue
 
-        for raw_rec in _extract_json_records(payload):
-            _, item = _normalize_record_keys(raw_rec)
+        for raw_rec in extract_json_records(payload):
+            _, item = normalize_record_keys(raw_rec)
 
-            if (
-                "source_language" in item
-                and "target_language" in item
-                and ("audio_start" in item or "mtpe" in item or "mt" in item)
-            ):
+            if is_71693_record(item):
                 src_lang = str(item.get("source_language") or "").strip().lower()
                 tgt_lang = str(item.get("target_language") or "").strip().lower()
                 if src_lang.startswith("en") and tgt_lang.startswith("ko"):
-                    ko_txt = _clean_text_field(item.get("mtpe"))
+                    ko_txt = clean_transcript_text(item.get("mtpe"))
                     if not ko_txt and use_mt_fallback:
-                        ko_txt = _clean_text_field(item.get("mt"))
+                        ko_txt = clean_transcript_text(item.get("mt"))
                     if ko_txt:
                         direct_sentences.append(ko_txt)
                 continue
 
             if "음성파일명" in item and "t-fname" not in item and "t-code" not in item:
-                ko_fname = _clean_text_field(item.get("음성파일명"))
+                ko_fname = clean_transcript_text(item.get("음성파일명"))
                 stem_key = Path(ko_fname).stem.lower() if ko_fname else ""
                 is_deid = str(item.get("비식별화") or "").strip().upper() == "O"
                 if is_deid:
@@ -378,10 +366,10 @@ def extract_korean_sentences_from_path(
                         deidentified_stems.add(stem_key)
                     continue
                 stt_txt = (
-                    _clean_text_field(item.get("번역본"))
-                    or _clean_text_field(item.get("철자전사"))
-                    or _clean_text_field(item.get("발음전사"))
-                    or _clean_text_field(item.get("전사작업본"))
+                    clean_transcript_text(item.get("번역본"))
+                    or clean_transcript_text(item.get("철자전사"))
+                    or clean_transcript_text(item.get("발음전사"))
+                    or clean_transcript_text(item.get("전사작업본"))
                 )
                 if stt_txt:
                     if stem_key:
@@ -394,19 +382,19 @@ def extract_korean_sentences_from_path(
                 continue
 
             generic_txt = (
-                _clean_text_field(item.get("ko_mtpe"))
-                or _clean_text_field(item.get("ko"))
-                or _clean_text_field(item.get("한국어"))
-                or _clean_text_field(item.get("수정원문"))
-                or _clean_text_field(item.get("원문"))
+                clean_transcript_text(item.get("ko_mtpe"))
+                or clean_transcript_text(item.get("ko"))
+                or clean_transcript_text(item.get("한국어"))
+                or clean_transcript_text(item.get("수정원문"))
+                or clean_transcript_text(item.get("원문"))
             )
             if not generic_txt and use_mt_fallback:
-                generic_txt = _clean_text_field(item.get("ko_mt"))
+                generic_txt = clean_transcript_text(item.get("ko_mt"))
             if not generic_txt:
                 label_info = item.get("라벨링") or item.get("labeling")
                 if isinstance(label_info, dict):
-                    _, lower_lbl = _normalize_record_keys(label_info)
-                    generic_txt = _clean_text_field(lower_lbl.get("한국어")) or _clean_text_field(
+                    _, lower_lbl = normalize_record_keys(label_info)
+                    generic_txt = clean_transcript_text(lower_lbl.get("한국어")) or clean_transcript_text(
                         lower_lbl.get("ko")
                     )
             if generic_txt:
@@ -416,10 +404,10 @@ def extract_korean_sentences_from_path(
         s_code = str(item.get("s-code") or "ko-KR").strip().lower()
         if s_code and not s_code.startswith("ko"):
             continue
-        ko_wav_name = _clean_text_field(item.get("s-fname"))
-        en_wav_name = _clean_text_field(item.get("t-fname"))
+        ko_wav_name = clean_transcript_text(item.get("s-fname"))
+        en_wav_name = clean_transcript_text(item.get("t-fname"))
         t_code = str(item.get("t-code") or "").strip()
-        variant = _classify_71379_accent(t_code, en_wav_name, jname)
+        variant = classify_71379_accent(t_code, en_wav_name, jname)
         if variant is None:
             continue
         if en_accent_71379 != "all" and variant != en_accent_71379:
@@ -429,7 +417,7 @@ def extract_korean_sentences_from_path(
             continue
         if str(item.get("비식별화") or "").strip().upper() == "O":
             continue
-        ko_txt = _clean_text_field(item.get("수정원문")) or _clean_text_field(item.get("원문"))
+        ko_txt = clean_transcript_text(item.get("수정원문")) or clean_transcript_text(item.get("원문"))
         if not ko_txt and ko_stem:
             ko_txt = stt_text_by_stem.get(ko_stem, "")
         if ko_txt:
@@ -514,7 +502,7 @@ def run_tokenizer_self_test() -> None:
         )
         assert (
             tok.unk_id() == TEXT_UNK_ID
-            and tok.bos_id() == TEXT_BOS_ID
+            and tok.bos_id() == SPM_BOS_ID
             and tok.eos_id() == TEXT_EOS_ID
             and tok.pad_id() == TEXT_PAD_ID
         )

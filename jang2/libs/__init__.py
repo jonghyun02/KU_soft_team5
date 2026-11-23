@@ -21,6 +21,20 @@ _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "assemble_multistream_example": ("libs.preprocessing_common", "assemble_multistream_example"),
     "encode_mimi_timeline": ("libs.preprocessing_common", "encode_mimi_timeline"),
     "resolve_default_sim_bin": ("libs.preprocessing_common", "resolve_default_sim_bin"),
+    "SplitLayout71693": ("libs.dataset_parsing", "SplitLayout71693"),
+    "SplitLayout71379": ("libs.dataset_parsing", "SplitLayout71379"),
+    "discover_71693_splits": ("libs.dataset_parsing", "discover_71693_splits"),
+    "discover_71379_splits": ("libs.dataset_parsing", "discover_71379_splits"),
+    "parse_71693_split": ("libs.dataset_parsing", "parse_71693_split"),
+    "parse_71379_split": ("libs.dataset_parsing", "parse_71379_split"),
+    "run_preprocess_datasets": ("libs.dataset_builder", "run_preprocess_datasets"),
+    "GRPOPromptSample": ("libs.grpo_rollout", "GRPOPromptSample"),
+    "RolloutBatch": ("libs.grpo_rollout", "RolloutBatch"),
+    "GRPOPromptDataset": ("libs.grpo_rollout", "GRPOPromptDataset"),
+    "rollout_group_trajectories": ("libs.grpo_rollout", "rollout_group_trajectories"),
+    "evaluate_rollout_group_rewards": ("libs.grpo_rollout", "evaluate_rollout_group_rewards"),
+    "compute_grpo_loss": ("libs.grpo", "compute_grpo_loss"),
+    "run_grpo_training": ("libs.grpo", "run_grpo_training"),
 }
 
 __all__ = list(_EXPORT_MAP.keys())

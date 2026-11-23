@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+import soundfile as sf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -27,6 +28,8 @@ def resample_wav(wav: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tenso
     key = (orig_sr, target_sr, str(wav.dtype), str(wav.device))
     resampler = _RESAMPLER_CACHE.get(key)
     if resampler is None:
+        if len(_RESAMPLER_CACHE) >= 16:
+            _RESAMPLER_CACHE.clear()
         resampler = torchaudio.transforms.Resample(
             orig_freq=orig_sr, new_freq=target_sr, dtype=wav.dtype
         ).to(wav.device)
@@ -35,14 +38,47 @@ def resample_wav(wav: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tenso
 
 
 def load_mono_wav_24k(
-    wav_path: Path,
+    wav_path: Path | str,
     target_sr: int = SAMPLE_RATE,
     keep_channel_dim: bool = False,
+    start_sec: Optional[float] = None,
+    end_sec: Optional[float] = None,
 ) -> torch.Tensor:
-    """오디오 파일을 읽어 모노 채널로 평균화하고 지정된 샘플링 레이트(기본 24kHz)로 변환합니다."""
-    wav, sr = torchaudio.load(str(wav_path))
-    mono = wav.mean(dim=0, keepdim=keep_channel_dim).float()
-    return resample_wav(mono, sr, target_sr)
+    """오디오 파일 전체 또는 지정된 시간 구간만 읽어 모노 채널 및 목표 샘플레이트(기본 24kHz)로 변환합니다."""
+    path_str = str(wav_path)
+    try:
+        if start_sec is not None and end_sec is not None:
+            with sf.SoundFile(path_str, mode="r") as sfile:
+                sr = int(sfile.samplerate)
+                total_frames = len(sfile)
+                s_frame = max(0, min(int(start_sec * sr), total_frames))
+                e_frame = max(s_frame, min(int(end_sec * sr) + 1, total_frames))
+                if e_frame <= s_frame:
+                    empty = torch.zeros(0, dtype=torch.float32)
+                    return empty.unsqueeze(0) if keep_channel_dim else empty
+                sfile.seek(s_frame)
+                data = sfile.read(e_frame - s_frame, dtype="float32", always_2d=True)
+        else:
+            data, sr = sf.read(path_str, dtype="float32", always_2d=True)
+
+        if data.size == 0:
+            empty = torch.zeros(0, dtype=torch.float32)
+            return empty.unsqueeze(0) if keep_channel_dim else empty
+        mono = torch.from_numpy(data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]).float()
+        if int(sr) != target_sr:
+            mono = resample_wav(mono, int(sr), target_sr)
+        mono = mono.contiguous()
+        return mono.unsqueeze(0) if keep_channel_dim else mono
+    except Exception:
+        wav, sr = torchaudio.load(path_str)
+        mono = wav.mean(dim=0, keepdim=False).float()
+        if sr != target_sr:
+            mono = resample_wav(mono, sr, target_sr)
+        if start_sec is not None and end_sec is not None:
+            s_i = max(0, min(int(start_sec * target_sr), mono.numel()))
+            e_i = max(s_i, min(int(end_sec * target_sr), mono.numel()))
+            mono = mono[s_i:e_i].contiguous()
+        return mono.unsqueeze(0) if keep_channel_dim else mono
 
 
 class CausalConv1d(nn.Module):

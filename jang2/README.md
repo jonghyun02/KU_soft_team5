@@ -3,7 +3,7 @@
 듀얼 스트림 계층형 트랜스포머(Temporal Transformer + Depformer) 기반의 영→한 실시간 음성-음성/텍스트 동시통역 아키텍처인 **EDarch**를 모듈형 파이썬 라이브러리(`libs/`)와 경량 실행 스크립트 구조로 구현한 코드베이스입니다.
 
 **Hibiki-Zero** 패러다임을 적용하여 단어 단위 영-한 수동 정렬 데이터 없이도 다음 전체 파이프라인을 수행합니다:
-1. **한국어 SentencePiece 토크나이저 구축 & Inner Monologue 정밀 정렬 전처리** (`verify.py` + `preprocessing.py`)
+1. **한국어 SentencePiece 토크나이저 구축 & Inner Monologue 정밀 정렬 전처리** (`verify.py` + `preprocess_datasets.py`)
 2. **Stage 1: 문장 단위 인과 정렬 지도학습 (SFT)** (`train.py`)
 3. **Stage 2: GRPO(Group Relative Policy Optimization) 저지연 동시통역 강화학습** (`train_grpo.py`)
 4. **80ms(12.5Hz) 프레임 단위 실시간 스트리밍 추론** (`run.py`)
@@ -14,8 +14,7 @@
 
 ```text
 jang2/
-├── preprocessing.py                # [실행 전용] AI-Hub 71693 & 71379 유연 경로 전처리 진입점
-├── preprocess_datasets.py          # [실행 전용] AI-Hub 71693 & 71379 표준 Training/Validation 분할 일괄 전처리 진입점
+├── preprocess_datasets.py          # [실행 전용] AI-Hub 71693 & 71379 Training/Validation 분할 일괄 전처리 진입점
 ├── train.py                        # [실행 전용] Stage 1 문장 단위 지도학습(SFT) 진입점
 ├── train_grpo.py                   # [실행 전용] Stage 2 GRPO 동시통역 강화학습 진입점
 ├── run.py                          # [실행 전용] 실시간 스트리밍 음성·텍스트 추론 진입점
@@ -33,10 +32,11 @@ jang2/
     ├── optim.py                    # 통합 AMP 컨텍스트, 임베딩 제외 AdamW 파라미터 그룹, Warmup-Cosine 스케줄러, Grad Clip 스텝
     ├── alignment.py                # Inner Monologue 정밀 정렬(Energy VAD / Whisper / 벡터화 CTC Viterbi) 및 WavLM 화자 유사도
     ├── preprocessing_common.py     # [공통 전처리 코어] 발화 구조체, 슬라이서, MMS/Edge TTS, 오버랩 Mimi 인코딩, 타임라인 조립기
-    ├── preprocessing_pipeline.py   # 단일/복합 디렉터리 유연 전처리 파이프라인 (preprocessing_common 기반)
-    ├── dataset_builder.py          # Training/Validation 저메모리 배치 분할 전처리 빌더 (preprocessing_common 기반)
+    ├── dataset_parsing.py          # AI-Hub 71693·71379 Training/Validation 디렉터리 탐색 및 저메모리 병렬 JSON 파서
+    ├── dataset_builder.py          # Training/Validation 저메모리 배치 분할 .pt 변환 및 전처리 빌더 (run_preprocess_datasets)
     ├── training.py                 # PreprocessedPtDataset, CollatePad, 검증 평가 및 Stage 1 SFT 학습 루프(run_sft_training)
-    ├── grpo.py                     # GRPO 롤아웃 생성기, Smoothed/Process BLEU + 실시간 LAAL 보상 평가기, Stage 2 학습 루프
+    ├── grpo_rollout.py             # GRPOPromptDataset, 배치 병렬 스트리밍 롤아웃 생성기, Smoothed/Process BLEU + LAAL 보상 평가기
+    ├── grpo.py                     # GRPO Clipped Surrogate 정책 손실 + Schulman k3 KL 및 Stage 2 강화학습 루프(run_grpo_training)
     └── streaming.py                # EDarchStreamingGenerator, 실시간 스트리밍 추론(run_streaming_inference), 모델 무결성 검증
 ```
 
@@ -44,8 +44,7 @@ jang2/
 
 | 실행 파일 | 위임 대상 라이브러리 함수 | 핵심 역할 |
 | :--- | :--- | :--- |
-| [`preprocessing.py`](./preprocessing.py) | `libs.preprocessing_pipeline.run_preprocessing` | 단일·복합 폴더 기준 AI-Hub 71693·71379 데이터 파싱 및 정밀 정렬 `.pt` 생성 |
-| [`preprocess_datasets.py`](./preprocess_datasets.py) | `libs.dataset_builder.run_d_drive_preprocessing` | AI-Hub 표준 `Training`/`Validation` 폴더 구조를 자동 탐색해 저메모리로 `train`/`val` 분할 `.pt` 일괄 구축 |
+| [`preprocess_datasets.py`](./preprocess_datasets.py) | `libs.dataset_builder.run_preprocess_datasets` | AI-Hub 71693·71379 `Training`/`Validation`(또는 단일 디렉터리) 구조를 탐색해 저메모리로 `train`/`val` 분할 `.pt` 일괄 구축 |
 | [`train.py`](./train.py) | `libs.training.run_sft_training` | Stage 1 문장 단위 인과 정렬 지도학습(SFT), 검증(`--val-data-dir`) 및 `EDarch_ckpt.pt` 저장 |
 | [`train_grpo.py`](./train_grpo.py) | `libs.grpo.run_grpo_training` | Stage 2 GRPO 그룹 롤아웃 저지연 강화학습, 검증(`--val-data-dir`) 및 `EDarch_grpo_ckpt.pt` 저장 |
 | [`run.py`](./run.py) | `libs.streaming.run_streaming_inference` | 학습된 체크포인트 기반 실시간 영어→한국어 음성 합성 및 번역문 출력 |
@@ -72,7 +71,7 @@ jang2/
 ```mermaid
 flowchart TD
     subgraph RUNNERS["루트 실행 스크립트 계층 (Thin CLI Runners)"]
-        R_PREP["preprocessing.py"]
+        R_PREP["preprocess_datasets.py"]
         R_TRAIN["train.py"]
         R_GRPO["train_grpo.py"]
         R_TRY["run.py"]
@@ -85,10 +84,13 @@ flowchart TD
     end
 
     subgraph PIPELINES["파이프라인·학습·추론 엔진 계층 (libs/)"]
-        PIPE_PREP["libs/preprocessing_pipeline.py"]
+        PIPE_PREP["libs/dataset_builder.py"]
+        PREP_PARSE["libs/dataset_parsing.py (탐색 / 병렬 JSON 파서)"]
+        PREP_COM["libs/preprocessing_common.py (슬라이서 / TTS / 조립기)"]
         ALIGN["libs/alignment.py (Energy / Whisper / CTC / WavLM)"]
         PIPE_SFT["libs/training.py (Stage 1 SFT)"]
-        PIPE_GRPO["libs/grpo.py (Stage 2 GRPO)"]
+        PIPE_GRPO["libs/grpo.py (Stage 2 GRPO 루프)"]
+        GRPO_ROLL["libs/grpo_rollout.py (롤아웃 / BLEU·LAAL 보상)"]
         PIPE_STREAM["libs/streaming.py (EDarchStreamingGenerator / 추론)"]
         OPTIM["libs/optim.py (AMP / AdamW / Warmup-Cosine)"]
     end
@@ -108,10 +110,13 @@ flowchart TD
     R_TRY --> PIPE_STREAM
     R_VER --> TOK & PIPE_STREAM
 
-    PIPE_PREP --> ALIGN & CODEC & TOK & CFG & ENV
+    PIPE_PREP --> PREP_PARSE & PREP_COM & ALIGN & CODEC & TOK & CFG & ENV
+    PREP_PARSE --> PREP_COM & TOK
+    PREP_COM --> CODEC & TOK & ENV
     ALIGN --> CODEC
     PIPE_SFT --> MODEL & CODEC & OPTIM & CFG & ENV
-    PIPE_GRPO --> MODEL & PIPE_STREAM & CODEC & OPTIM & TOK & CFG & ENV
+    PIPE_GRPO --> GRPO_ROLL & MODEL & CODEC & OPTIM & TOK & CFG & ENV
+    GRPO_ROLL --> MODEL & PIPE_STREAM & PIPE_SFT & CFG
     PIPE_STREAM --> MODEL & CODEC & OPTIM & TOK & CFG & ENV
 
     MODEL --> LAYERS & CFG
@@ -130,6 +135,7 @@ from libs import (
     MiniMimiCodec,
     adapt_EDarch_for_korean_vocab,
     load_korean_tokenizer,
+    run_preprocess_datasets,
     train_korean_sentencepiece,
 )
 ```
@@ -140,13 +146,13 @@ from libs import (
 
 ```mermaid
 flowchart LR
-    subgraph S1["1단계: 토크나이저 구축 & 정밀 전처리 (preprocessing.py)"]
-        RAW["AI-Hub 71693 / 71379 (JSON + EN/KO WAV)"]
+    subgraph S1["1단계: 토크나이저 구축 & 정밀 전처리 (preprocess_datasets.py)"]
+        RAW["AI-Hub 71693 / 71379 (Training/Validation JSON + EN/KO WAV)"]
         TOK_SPM["SentencePiece 모델 (ko_spm.model)"]
         ALIGN_ENG["정밀 정렬 엔진 (libs/alignment.py)"]
-        PT_OUT["전처리 샘플 (.pt) codes: [1+2Q, T], sim_bin, src_end_frames, ref_token_groups"]
+        PT_OUT["전처리 샘플 (train/*.pt, val/*.pt) codes: [1+2Q, T], sim_bin, src_end_frames, ref_token_groups"]
 
-        RAW -->|"--train-sp-if-missing (최초 1회 통계 집계)"| TOK_SPM
+        RAW -->|"미존재 시 자동 학습"| TOK_SPM
         RAW --> ALIGN_ENG
         TOK_SPM --> ALIGN_ENG --> PT_OUT
     end
@@ -185,7 +191,7 @@ flowchart LR
 > [!IMPORTANT]
 > **토크나이저(`ko_spm.model`) 운용 주의사항**
 > - SentencePiece 토크나이저 생성은 GPU 딥러닝이 아니라 코퍼스의 서브워드 빈도를 집계해 단어장 번호(`0 ~ text_card-1`)를 매기는 **CPU 통계 작업(수 초~수십 초 소요)** 입니다.
-> - `preprocessing.py` 실행 시 `--tokenizer ./ko_spm.model --train-sp-if-missing`을 지정하면 파일이 없을 때 자동으로 생성됩니다(또는 `python verify.py train-tokenizer --input ... --output ./ko_spm.model`로 사전 생성 가능).
+> - `preprocess_datasets.py` 실행 시 `--tokenizer`로 지정한 파일(또는 `<output-dir>/ko_spm.model`)이 없으면 수집된 코퍼스로부터 자동으로 생성됩니다(또는 `python verify.py train-tokenizer --input ... --output ./ko_spm.model`로 사전 생성 가능).
 > - **한 번 생성된 `ko_spm.model`은 토큰 번호 체계 고정을 위해 절대 덮어쓰지 말고 `train_grpo.py`와 `run.py`까지 동일한 파일로 재사용**해야 합니다.
 
 ---
@@ -215,13 +221,16 @@ flowchart LR
 - **[`libs/config.py`](./libs/config.py)**: `EDarchConfig` 데이터클래스를 정의하며 `1b`/`2b` 프리셋 생성 및 직렬화 복원(`from_dict`)을 담당합니다.
 - **[`libs/tokenizer.py`](./libs/tokenizer.py)**: 한국어 NFC 정규화 및 UTF-8 Byte-Fallback을 지원하는 `sentencepiece` 모델 학습기(`train_korean_sentencepiece`), 로더(`load_korean_tokenizer`), AI-Hub 71693·71379 코퍼스 추출기를 제공합니다.
 - **[`libs/layers.py`](./libs/layers.py)**: `RMSNormFP32`, 시간축 `RotaryEmbedding`, `StepIndexedLinear`/`StepIndexedSwiGLU`, `LayerKVCache`, `StreamingTransformerStack`, `SpeakerSimilarityConditioner`, 시퀀스 딜레이 연산을 포함합니다.
-- **[`libs/codec.py`](./libs/codec.py)**: 통합 오디오 로더(`load_mono_wav_24k`), 인과 합성곱 기반 내장 RVQ 코덱(`MiniMimiCodec`), HuggingFace `kyutai/mimi` 래퍼(`ExternalMimiCodec`)를 제공합니다.
+- **[`libs/codec.py`](./libs/codec.py)**: 부분 Seek를 지원하는 통합 오디오 로더(`load_mono_wav_24k`), 인과 합성곱 기반 내장 RVQ 코덱(`MiniMimiCodec`), HuggingFace `kyutai/mimi` 래퍼(`ExternalMimiCodec`)를 제공합니다.
 - **[`libs/model.py`](./libs/model.py)**: 계층형 트랜스포머 `EDarchModel`(`compute_loss`, 롤아웃 샘플링 정합형 `compute_token_log_probs`, 추론 전용 가중치 로더 `load_state_dict_for_inference`)과 한국어 어휘 교체 함수 `adapt_EDarch_for_korean_vocab()`을 포함합니다.
 - **[`libs/optim.py`](./libs/optim.py)**: AMP 자동 정밀도 결정(`resolve_amp_context`), 임베딩 Weight Decay 제외 `AdamW` 그룹 생성, 선형 워밍업 + 코사인 감쇠 스케줄러, Grad Clipping 스텝 헬퍼를 제공합니다.
 - **[`libs/alignment.py`](./libs/alignment.py)**: 12.5Hz 프레임 RMS 에너지/적응형 VAD 정렬(`align_tokens_by_acoustic_energy`), Whisper 단어 타임스탬프 정렬, 한국어 Wav2Vec2 CTC Viterbi 강제 정렬(`_viterbi_ctc_forced_align`), WavLM 화자 유사도 계산기를 제공합니다.
-- **[`libs/preprocessing_pipeline.py`](./libs/preprocessing_pipeline.py)**: AI-Hub 71693(국제학술대회) 및 71379(방송콘텐츠) JSON 파서, 초과 길이 자동 이진 분할 윈도우 슬라이서, 트리 인덱싱 기반 `--skip-existing`, Stage 1·Stage 2 호환 `.pt` 텐서 생성 파이프라인을 포함합니다.
-- **[`libs/training.py`](./libs/training.py)**: `.pt` 데이터셋 검증 로더(`PreprocessedPtDataset`), 동적 패딩 콜레이터(`CollatePad`), Stage 1 지도학습 루프(`run_sft_training`)를 제공합니다.
-- **[`libs/grpo.py`](./libs/grpo.py)**: 배치 병렬 스트리밍 롤아웃(`rollout_group_trajectories`), Smoothed/Process BLEU 및 LAAL 지연시간 복합 보상(`evaluate_rollout_group_rewards`), Clipped Policy Gradient + Schulman k3 KL 손실(`compute_grpo_loss`) 기반 Stage 2 강화학습 루프를 제공합니다.
+- **[`libs/preprocessing_common.py`](./libs/preprocessing_common.py)**: 발화 데이터클래스(`UtteranceSpan`, `BroadcastUtterance71379`), 고속 디렉터리 스캐너(`fast_scandir_files`), 한국어 연음 로마자 변환 및 MMS/Edge TTS 합성기, 인과 오버랩 Mimi 인코딩(`encode_mimi_timeline`), 멀티스트림 타임라인 조립기(`assemble_multistream_example`), 이진 분할 윈도우 트리 인덱서를 제공합니다.
+- **[`libs/dataset_parsing.py`](./libs/dataset_parsing.py)**: AI-Hub 71693(국제학술대회) 및 71379(방송콘텐츠) `Training`/`Validation` 폴더 구조를 자동 탐색(`discover_71693_splits`, `discover_71379_splits`)하고 저메모리 멀티스레드로 JSON 라벨 및 Sublabel 한국어 코퍼스를 파싱(`parse_71693_split`, `parse_71379_split`)합니다.
+- **[`libs/dataset_builder.py`](./libs/dataset_builder.py)**: 파싱된 발화 그룹을 초과 길이 자동 이진 분할(`_w0000_p0`/`_p1`)과 이어하기를 적용해 `.pt` 텐서로 변환(`process_71693_to_pt`, `process_71379_to_pt`)하고 데이터셋 로더 검증을 수행하는 통합 전처리 빌더(`run_preprocess_datasets`)입니다.
+- **[`libs/training.py`](./libs/training.py)**: 공통 `.pt` 검증 로더(`list_preprocessed_pt_files`, `load_and_validate_pt_item`), `PreprocessedPtDataset`, 동적 패딩 콜레이터(`CollatePad`), Stage 1 지도학습 루프(`run_sft_training`)를 제공합니다.
+- **[`libs/grpo_rollout.py`](./libs/grpo_rollout.py)**: Stage 2 프롬프트 데이터셋(`GRPOPromptDataset`), 배치 병렬 스트리밍 롤아웃(`rollout_group_trajectories`), Smoothed/Process BLEU 및 실시간 LAAL 지연시간 복합 보상 산출기(`evaluate_rollout_group_rewards`)를 제공합니다.
+- **[`libs/grpo.py`](./libs/grpo.py)**: Clipped Surrogate Policy Gradient + Schulman k3 KL 손실(`compute_grpo_loss`), 검증 롤아웃 평가 및 Stage 2 GRPO 강화학습 루프(`run_grpo_training`)를 제공합니다.
 - **[`libs/streaming.py`](./libs/streaming.py)**: 음향 딜레이 역정렬 링 버퍼를 내장한 `EDarchStreamingGenerator`, WAV 입출력 추론 파이프라인(`run_streaming_inference`), 모델 전 과정 무결성 검증(`run_bottom_up_verification`)을 제공합니다.
 
 ---
@@ -239,14 +248,13 @@ python verify.py train-tokenizer --input ./raw/json --output ./ko_spm.model --vo
 python verify.py model --preset 1b
 ```
 
-### 6.2 데이터셋 정밀 전처리 및 토크나이저 자동 생성 (`preprocessing.py`)
+### 6.2 데이터셋 정밀 전처리 및 토크나이저 자동 생성 (`preprocess_datasets.py`)
 ```powershell
-python preprocessing.py --json-dir ./raw/json --wav-dir ./raw/wav --output-dir ./data_pt `
-    --preset 1b --tokenizer ./ko_spm.model --train-sp-if-missing `
-    --mimi-model kyutai/mimi --align-mode energy
+python preprocess_datasets.py --dir-71693 D:\data --dir-71379 D:\data2 --output-dir E:\preprocessed_edarch `
+    --preset 1b --tokenizer ./ko_spm.model --codec mimi --mimi-model kyutai/mimi --align-mode energy
 
-python preprocessing.py --root-71379 ./raw/71379 --output-dir ./data_pt `
-    --preset 1b --tokenizer ./ko_spm.model --mimi-model kyutai/mimi `
+python preprocess_datasets.py --dir-71379 ./raw/71379 --only-71379 --output-dir ./data_pt `
+    --preset 1b --tokenizer ./ko_spm.model --codec mimi --mimi-model kyutai/mimi `
     --align-mode ctc --ctc-align-model kresnik/wav2vec2-large-xlsr-korean
 ```
 
@@ -254,15 +262,16 @@ python preprocessing.py --root-71379 ./raw/71379 --output-dir ./data_pt `
 ```powershell
 python train.py --preset 1b --grad-checkpointing --batch-size 1 --epochs 2 --steps-per-epoch 5
 
-python train.py --preset 1b --ko-vocab-size 32000 --data-dir ./data_pt `
-    --grad-checkpointing --batch-size 2 --grad-accum-steps 8 --epochs 10
+python train.py --preset 1b --ko-vocab-size 32000 --data-dir E:\preprocessed_edarch\train `
+    --val-data-dir E:\preprocessed_edarch\val --grad-checkpointing --batch-size 2 --grad-accum-steps 8 --epochs 10
 ```
 
 ### 6.4 Stage 2: GRPO 저지연 동시통역 강화학습 (`train_grpo.py`)
 ```powershell
 python train_grpo.py --preset 1b --grad-checkpointing --group-size 4 --steps-per-epoch 3
 
-python train_grpo.py --init-from ./EDarch_ckpt.pt --data-dir ./data_pt --tokenizer ./ko_spm.model `
+python train_grpo.py --init-from ./EDarch_ckpt.pt --data-dir E:\preprocessed_edarch\train `
+    --val-data-dir E:\preprocessed_edarch\val --tokenizer ./ko_spm.model `
     --grad-checkpointing --group-size 4 --kl-coef 0.02 `
     --reward-bleu-weight 1.0 --reward-latency-weight 0.15 `
     --lr 1e-5 --epochs 2 --save-path ./EDarch_grpo_ckpt.pt
@@ -273,3 +282,44 @@ python train_grpo.py --init-from ./EDarch_ckpt.pt --data-dir ./data_pt --tokeniz
 python run.py --checkpoint ./EDarch_grpo_ckpt.pt --mimi-model kyutai/mimi --tokenizer ./ko_spm.model `
     --input-wav ./sample_en.wav --output-wav ./outputs/EDarch_out.wav --cfg-coef 1.0
 ```
+
+### 6.6 실시간 스트리밍 추론 상세 흐름도 (`run_streaming_inference` & `EDarchStreamingGenerator`)
+
+```mermaid
+flowchart TD
+    subgraph INIT["1. 초기화 및 입력 인코딩 (run_streaming_inference)"]
+        IN_ARGS["입력 영어 WAV (--input-wav) + 체크포인트 (--checkpoint) + 토크나이저 (ko_spm.model)"]
+        LOAD_MODEL["EDarchModel 추론 가중치 로드 (load_state_dict_for_inference) & 코덱 초기화 (resolve_inference_codec)"]
+        LOAD_WAV["24kHz 모노 파형 변환 (load_mono_wav_24k) 및 무음 패딩 프레임 생성"]
+        MIMI_ENC["Mimi 코덱 인코딩: 12.5Hz (80ms) 소스 RVQ 토큰 src_codes [1, Q, T] & silence_code [1, Q, 1]"]
+        INIT_GEN["EDarchStreamingGenerator 초기화: ring_cache [B, 1+2Q, ring_len], temporal_kv 캐시, 화자 유사도 조건 임베딩 (cond_emb)"]
+
+        IN_ARGS --> LOAD_MODEL --> LOAD_WAV --> MIMI_ENC --> INIT_GEN
+    end
+
+    subgraph LOOP["2. 80ms 프레임 단위 스트리밍 루프 (EDarchStreamingGenerator.step)"]
+        FEED_SEL{"현재 프레임 구간 판별"}
+        SRC_FEED["원문 구간 (t < T): src_codes[:, :, t:t+1] 입력 (suppress_eos=True)"]
+        TAIL_FEED["무음 꼬리 구간 (t >= T): silence_code 입력 (suppress_eos=False)"]
+        RING_WRITE["1) 딜레이 링 버퍼 기록 및 읽기: 소스 토큰을 (step_offset + 1 + delay) 위치에 기록 후 현재 스텝의 지연 정렬된 멀티스트림 입력 [B, 1+2Q, 1] 추출"]
+        TEMP_FWD["2) Temporal Transformer 순전파: temporal_kv 슬라이딩 캐시 갱신 및 CFG 조건 결합 -> 시간 은닉 상태 z_t & 텍스트 로짓 산출"]
+        SAMPLE_TXT["3) 한국어 텍스트 토큰 샘플링 (sample_top_k): 원문 진행 중 조기 EOS 억제 후 Inner Monologue 서브워드 토큰( 또는 PAD/EOS) 결정"]
+        DEP_LOOP["4) Depformer 깊이축 순차 생성 (cb = 0 .. Q-1): z_t와 직전 토큰(텍스트 -> 코드북 0 -> ... -> Q-2)을 입력받아 타깃 한국어 오디오 RVQ 코드북 Q개 샘플링"]
+        RING_UNDELAY["5) 생성 토큰 링 버퍼 저장 및 음향 딜레이 역정렬: step_offset > max_delay 시점부터 시간축이 복원된 (aligned_text, aligned_audio) 방출"]
+        EOS_CHECK{"종료 조건 검사"}
+
+        FEED_SEL -->|"원문 프레임 진행 중"| SRC_FEED --> RING_WRITE
+        FEED_SEL -->|"원문 종료 후 꼬리 플러시"| TAIL_FEED --> RING_WRITE
+        RING_WRITE --> TEMP_FWD --> SAMPLE_TXT --> DEP_LOOP --> RING_UNDELAY --> EOS_CHECK
+        EOS_CHECK -->|"미종료: 다음 80ms 프레임"| FEED_SEL
+    end
+
+    subgraph OUT["3. 디코딩 및 최종 출력 저장"]
+        MIMI_DEC["Mimi 코덱 디코딩: 누적된 타깃 오디오 코드 [1, Q, T_out] -> 24kHz 한국어 음성 파형 복원 및 WAV 저장 (--output-wav)"]
+        SPM_DEC["SentencePiece 디코딩: TEXT_PAD_ID(3) 및 TEXT_EOS_ID(2) 제외 후 DecodeIds로 한국어 번역문 출력"]
+    end
+
+    INIT_GEN --> FEED_SEL
+    EOS_CHECK -->|"TEXT_EOS_ID(2) 감지 후 eos_tail_frames(2프레임) 추가 플러시 완료 또는 max_tail_sec 도달"| MIMI_DEC & SPM_DEC
+```
+

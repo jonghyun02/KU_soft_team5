@@ -27,7 +27,6 @@ from typing import (
     Union,
 )
 
-import soundfile as sf
 import torch
 
 from libs.codec import (
@@ -40,13 +39,8 @@ from libs.env import atomic_torch_save
 from libs.tokenizer import (
     TEXT_EOS_ID,
     TEXT_PAD_ID,
-    classify_71379_accent,
     clean_transcript_text,
-    extract_json_records,
-    is_71693_record,
     normalize_korean_text,
-    normalize_record_keys,
-    parse_hhmmss,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,15 +49,11 @@ ZERO_TOKEN_ID = -1
 DEFAULT_CONTEXT_FRAMES = 1000
 
 _SENT_SPLIT_RE = re.compile(r"(?<=[.?!,;])\s+")
-_SPLIT_TREE_STEM_RE = re.compile(r"^(.*_(?:win|w)\d{4})((?:_(?:a|b|p0|p1))+)$")
-_BRANCH_TOKEN_RE = re.compile(r"_(?:a|b|p0|p1)")
+_SPLIT_TREE_STEM_RE = re.compile(r"^(.*_w\d{4})((?:_(?:p0|p1))+)$")
+_BRANCH_TOKEN_RE = re.compile(r"_(?:p0|p1)")
 
 T_In = TypeVar("T_In")
 T_Out = TypeVar("T_Out")
-
-# ==============================================================================
-# 1. 병렬 스레드풀·디렉터리 인덱싱·부분 Seek 오디오 로더
-# ==============================================================================
 
 
 def batched_pool_map(
@@ -131,96 +121,6 @@ def fast_scandir_files(
 
     return by_lower_name, ordered_paths
 
-
-def index_wav_files(
-    *dirs: Optional[Path],
-    prefer_keywords: Tuple[str, ...] = (),
-) -> Tuple[dict[str, Path], List[Path]]:
-    """지정된 디렉터리들에서 WAV 파일을 대소문자 무관하게 인덱싱하고 경로 키워드 우선순위를 적용합니다."""
-    by_lower_name: dict[str, Path] = {}
-    best_score: dict[str, int] = {}
-    all_paths: List[Path] = []
-    seen_norm: Set[str] = set()
-
-    def _path_score(parent_lower: str) -> int:
-        if not prefer_keywords:
-            return 0
-        return sum(1 for kw in prefer_keywords if kw in parent_lower)
-
-    _, raw_paths = fast_scandir_files(dirs, ".wav")
-    for p_str in raw_paths:
-        norm_key = os.path.normcase(os.path.abspath(p_str))
-        if norm_key in seen_norm:
-            continue
-        seen_norm.add(norm_key)
-        p_obj = Path(p_str)
-        all_paths.append(p_obj)
-        lname = p_obj.name.lower()
-        sc = _path_score(str(p_obj.parent).lower())
-        if lname not in by_lower_name or sc > best_score[lname]:
-            by_lower_name[lname] = p_obj
-            best_score[lname] = sc
-    return by_lower_name, all_paths
-
-
-def resolve_wav_path(
-    wav_dir: Optional[Path],
-    file_name: str,
-    wav_index: Mapping[str, Path],
-) -> Optional[Path]:
-    """파일명 또는 스템 이름을 이용해 인덱싱된 WAV 파일의 실제 경로를 탐색합니다."""
-    if not file_name:
-        return None
-    if wav_dir is not None:
-        direct = wav_dir / file_name
-        if direct.exists():
-            return direct
-    name_only = Path(file_name).name.lower()
-    if name_only in wav_index:
-        return wav_index[name_only]
-    stem_wav = f"{Path(file_name).stem.lower()}.wav"
-    return wav_index.get(stem_wav)
-
-
-def fast_load_mono_wav_24k(
-    wav_path: Path | str,
-    start_sec: Optional[float] = None,
-    end_sec: Optional[float] = None,
-) -> torch.Tensor:
-    """soundfile을 이용해 전체 또는 필요한 시간 구간만 부분 로드하여 24kHz 모노 파형으로 반환합니다."""
-    path_str = str(wav_path)
-    try:
-        if start_sec is not None and end_sec is not None:
-            with sf.SoundFile(path_str, mode="r") as sfile:
-                sr = int(sfile.samplerate)
-                total_frames = len(sfile)
-                s_frame = max(0, min(int(start_sec * sr), total_frames))
-                e_frame = max(s_frame, min(int(end_sec * sr) + 1, total_frames))
-                if e_frame <= s_frame:
-                    return torch.zeros(0, dtype=torch.float32)
-                sfile.seek(s_frame)
-                data = sfile.read(e_frame - s_frame, dtype="float32", always_2d=True)
-        else:
-            data, sr = sf.read(path_str, dtype="float32", always_2d=True)
-
-        if data.size == 0:
-            return torch.zeros(0, dtype=torch.float32)
-        mono = torch.from_numpy(data.mean(axis=1) if data.shape[1] > 1 else data[:, 0])
-        if int(sr) != SAMPLE_RATE:
-            mono = resample_wav(mono, int(sr), SAMPLE_RATE)
-        return mono.contiguous()
-    except Exception:
-        full = load_mono_wav_24k(Path(path_str)).detach().cpu().float().reshape(-1)
-        if start_sec is not None and end_sec is not None:
-            s_i = max(0, min(int(start_sec * SAMPLE_RATE), full.numel()))
-            e_i = max(s_i, min(int(end_sec * SAMPLE_RATE), full.numel()))
-            return full[s_i:e_i].contiguous()
-        return full
-
-
-# ==============================================================================
-# 2. 한국어 로마자 변환기 및 로컬/클라우드 신경망 TTS 빌더
-# ==============================================================================
 
 _CHOSEONG = (
     "g", "kk", "n", "d", "tt", "r", "m", "b", "pp",
@@ -443,11 +343,6 @@ def build_edge_korean_tts_fn(
     return _synthesize
 
 
-# ==============================================================================
-# 3. 공통 발화 데이터클래스, 세그먼트 단절 판정 및 윈도우 슬라이서
-# ==============================================================================
-
-
 @dataclass(slots=True)
 class UtteranceSpan:
     """AI-Hub 71693 학술대회 발화 단위의 시간 구간 및 영-한 병렬 텍스트 데이터클래스입니다."""
@@ -461,11 +356,6 @@ class UtteranceSpan:
     gender: str = ""
     segment_break: bool = False
     direction: str = "en2ko"
-
-    @property
-    def ko_text(self) -> str:
-        """하위 호환을 위한 한국어 번역문 별칭 프로퍼티입니다."""
-        return self.ko_mtpe
 
 
 @dataclass(slots=True)
@@ -488,11 +378,6 @@ class BroadcastUtterance71379:
     raw_start_sec: Optional[float] = None
     raw_end_sec: Optional[float] = None
     segment_break: bool = False
-
-    @property
-    def variant(self) -> str:
-        """하위 호환을 위한 영어 억양('us' / 'uk') 별칭 프로퍼티입니다."""
-        return self.lang_variant
 
 
 def parse_71379_scene_and_seq(
@@ -643,40 +528,6 @@ def slice_71379_windows(
     return windows
 
 
-def extract_10s_speaker_prompt(
-    lecture_wav_24k: torch.Tensor,
-    spans: Sequence[UtteranceSpan],
-    prompt_sec: float = 10.0,
-) -> torch.Tensor:
-    """메모리에 로드된 강의 음성에서 제로샷 TTS 및 화자 유사도 평가용 참조 음성을 추출합니다."""
-    target_samples = int(prompt_sec * SAMPLE_RATE)
-    wav_len = lecture_wav_24k.numel()
-    chunks: List[torch.Tensor] = []
-    fallback_chunks: List[torch.Tensor] = []
-    collected = 0
-    for sp in spans:
-        s_idx = max(0, min(int(sp.start_sec * SAMPLE_RATE), wav_len))
-        e_idx = max(s_idx, min(int(sp.end_sec * SAMPLE_RATE), wav_len))
-        clip = lecture_wav_24k[s_idx:e_idx]
-        if clip.numel() > SAMPLE_RATE:
-            chunks.append(clip)
-            collected += clip.numel()
-            if collected >= target_samples:
-                break
-        elif clip.numel() > 0:
-            fallback_chunks.append(clip)
-
-    if chunks:
-        if collected < target_samples and fallback_chunks:
-            chunks.extend(fallback_chunks)
-        return torch.cat(chunks, dim=0)[:target_samples]
-    if fallback_chunks:
-        return torch.cat(fallback_chunks, dim=0)[:target_samples]
-    if wav_len > 0:
-        return lecture_wav_24k[:target_samples]
-    return torch.zeros(target_samples, dtype=lecture_wav_24k.dtype, device=lecture_wav_24k.device)
-
-
 def extract_prompt_24k_from_file(
     wav_path: Path | str,
     spans: Sequence[UtteranceSpan],
@@ -688,7 +539,7 @@ def extract_prompt_24k_from_file(
     acc = 0
     for sp in spans[:12]:
         if sp.end_sec - sp.start_sec > 0.5:
-            clip = fast_load_mono_wav_24k(wav_path, start_sec=sp.start_sec, end_sec=sp.end_sec)
+            clip = load_mono_wav_24k(wav_path, start_sec=sp.start_sec, end_sec=sp.end_sec)
             if clip.numel() > 0:
                 chunks.append(clip)
                 acc += clip.numel()
@@ -696,33 +547,8 @@ def extract_prompt_24k_from_file(
                     break
     if chunks:
         return torch.cat(chunks, dim=0)[:target]
-    fallback = fast_load_mono_wav_24k(wav_path, start_sec=0.0, end_sec=prompt_sec)
+    fallback = load_mono_wav_24k(wav_path, start_sec=0.0, end_sec=prompt_sec)
     return fallback[:target] if fallback.numel() > 0 else torch.zeros(target, dtype=torch.float32)
-
-
-def extract_prompt_from_clip_paths(
-    clip_paths: Sequence[Path | str],
-    prompt_sec: float = 10.0,
-) -> torch.Tensor:
-    """개별 발화 WAV 클립 경로들을 이어 붙여 목표 길이의 참조 화자 프롬프트를 생성합니다."""
-    target_samples = int(prompt_sec * SAMPLE_RATE)
-    chunks: List[torch.Tensor] = []
-    collected = 0
-    for p in clip_paths:
-        wav = fast_load_mono_wav_24k(p)
-        if wav.numel() > 0:
-            chunks.append(wav)
-            collected += wav.numel()
-            if collected >= target_samples:
-                break
-    if chunks:
-        return torch.cat(chunks, dim=0)[:target_samples]
-    return torch.zeros(target_samples, dtype=torch.float32)
-
-
-# ==============================================================================
-# 4. 검증·화자 유사도 결정·오버랩 안전 Mimi 인코딩·멀티스트림 조립기
-# ==============================================================================
 
 
 def validate_ko_token_ids(ko_token_ids: Sequence[int], text_card: Optional[int]) -> None:
@@ -1000,7 +826,7 @@ def count_completed_window_tree(
     base_stem: str,
     num_items: int,
     existing_stems: Set[str],
-    branch_tags: Tuple[str, str] = ("_a", "_b"),
+    branch_tags: Tuple[str, str] = ("_p0", "_p1"),
 ) -> Optional[int]:
     """윈도우 또는 이진 분할 하위 트리가 모두 저장되었으면 리프 개수를, 일부라도 누락되었으면 None을 반환합니다."""
     if base_stem in existing_stems:
@@ -1030,9 +856,6 @@ __all__ = [
     "batched_pool_map",
     "interleave_lists",
     "fast_scandir_files",
-    "index_wav_files",
-    "resolve_wav_path",
-    "fast_load_mono_wav_24k",
     "romanize_korean_for_mms",
     "split_long_korean_text",
     "normalize_tts_output",
@@ -1043,9 +866,7 @@ __all__ = [
     "mark_71379_segment_breaks",
     "slice_71693_windows",
     "slice_71379_windows",
-    "extract_10s_speaker_prompt",
     "extract_prompt_24k_from_file",
-    "extract_prompt_from_clip_paths",
     "validate_ko_token_ids",
     "validate_sim_bin",
     "resolve_default_sim_bin",
@@ -1054,10 +875,4 @@ __all__ = [
     "save_training_example_pt",
     "index_existing_window_trees",
     "count_completed_window_tree",
-    "parse_hhmmss",
-    "clean_transcript_text",
-    "normalize_record_keys",
-    "extract_json_records",
-    "is_71693_record",
-    "classify_71379_accent",
 ]
