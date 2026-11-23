@@ -178,6 +178,23 @@ def process_lyric_sections_to_pt(
 
             if cfg.context_frames > 0 and codes.shape[1] > cfg.context_frames:
                 codes = codes[:, : cfg.context_frames].contiguous()
+                codes[0, -1] = cfg.text_eos_id
+                if isinstance(built_meta.get("frame_target_syllables"), torch.Tensor):
+                    built_meta["frame_target_syllables"] = built_meta["frame_target_syllables"][
+                        : cfg.context_frames
+                    ].contiguous()
+                if isinstance(built_meta.get("frame_repeat_group_ids"), torch.Tensor):
+                    built_meta["frame_repeat_group_ids"] = built_meta["frame_repeat_group_ids"][
+                        : cfg.context_frames
+                    ].contiguous()
+                built_meta["src_start_frames"] = [
+                    min(int(f), cfg.context_frames - 1)
+                    for f in built_meta.get("src_start_frames", [])
+                ]
+                built_meta["src_end_frames"] = [
+                    min(int(f), cfg.context_frames)
+                    for f in built_meta.get("src_end_frames", [])
+                ]
 
             sim_bin = resolve_default_sim_bin(
                 vocal_source="real_vocal" if (src_wav_p and tgt_wav_p) else vocal_mode,

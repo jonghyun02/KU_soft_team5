@@ -14,6 +14,7 @@ _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "MiniMimiCodec": ("libs.codec", "MiniMimiCodec"),
     "ExternalMimiCodec": ("libs.codec", "ExternalMimiCodec"),
     "LyricStreamingGenerator": ("libs.streaming", "LyricStreamingGenerator"),
+    "build_frame_condition_schedules": ("libs.streaming", "build_frame_condition_schedules"),
     "train_lyric_sentencepiece": ("libs.tokenizer", "train_lyric_sentencepiece"),
     "load_lyric_tokenizer": ("libs.tokenizer", "load_lyric_tokenizer"),
     "render_section_with_controls": ("libs.tokenizer", "render_section_with_controls"),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 import wave
 
 import torch
@@ -63,8 +63,84 @@ def sample_top_k(
     )
 
 
+def build_frame_condition_schedules(
+    total_frames: int,
+    target_syllables: Optional[Sequence[int]] = None,
+    repeat_group_ids: Optional[Sequence[int]] = None,
+    src_start_frames: Optional[Sequence[int]] = None,
+    src_end_frames: Optional[Sequence[int]] = None,
+    frame_target_syllables: Optional[torch.Tensor] = None,
+    frame_repeat_group_ids: Optional[torch.Tensor] = None,
+    default_target_syllables: int = 8,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """섹션 행별 목표 음절 수와 반복 그룹 ID를 총 프레임 길이(`total_frames`)에 맞춘 1차원 프레임 스케줄 텐서로 변환합니다."""
+    t_len = max(1, int(total_frames))
+    syl_list = [max(1, int(s)) for s in target_syllables] if target_syllables else [max(1, int(default_target_syllables))]
+    num_lines = len(syl_list)
+    if repeat_group_ids and len(repeat_group_ids) >= num_lines:
+        rep_list = [max(0, int(r)) for r in repeat_group_ids[:num_lines]]
+    else:
+        rep_list = [0] * num_lines
+
+    f_syl: Optional[torch.Tensor] = None
+    if isinstance(frame_target_syllables, torch.Tensor) and frame_target_syllables.numel() > 0:
+        raw_s = frame_target_syllables.detach().cpu().long().reshape(-1)
+        if raw_s.numel() >= t_len:
+            f_syl = raw_s[:t_len].clone()
+        else:
+            pad_s = raw_s[-1:].expand(t_len - raw_s.numel())
+            f_syl = torch.cat([raw_s, pad_s], dim=0).clone()
+
+    f_rep: Optional[torch.Tensor] = None
+    if isinstance(frame_repeat_group_ids, torch.Tensor) and frame_repeat_group_ids.numel() > 0:
+        raw_r = frame_repeat_group_ids.detach().cpu().long().reshape(-1)
+        if raw_r.numel() >= t_len:
+            f_rep = raw_r[:t_len].clone()
+        else:
+            pad_r = raw_r[-1:].expand(t_len - raw_r.numel())
+            f_rep = torch.cat([raw_r, pad_r], dim=0).clone()
+
+    if f_syl is not None and f_rep is not None:
+        return f_syl, f_rep
+
+    if (
+        src_start_frames is not None
+        and src_end_frames is not None
+        and len(src_start_frames) == num_lines
+        and len(src_end_frames) == num_lines
+    ):
+        starts = [max(0, int(s)) for s in src_start_frames]
+        ends = [max(s + 1, int(e)) for s, e in zip(starts, src_end_frames)]
+    else:
+        total_syl = max(1, sum(syl_list))
+        starts = []
+        ends = []
+        acc_s = 0
+        for s_cnt in syl_list:
+            sf_i = (acc_s * t_len) // total_syl
+            acc_s += s_cnt
+            ef_i = max(sf_i + 1, (acc_s * t_len) // total_syl)
+            starts.append(sf_i)
+            ends.append(ef_i)
+
+    built_syl = torch.full((t_len,), int(syl_list[-1]), dtype=torch.long)
+    built_rep = torch.full((t_len,), int(rep_list[-1]), dtype=torch.long)
+    for idx, (s_f, e_f) in enumerate(zip(starts, ends)):
+        cs = max(0, min(s_f, t_len))
+        ce = max(cs, min(e_f, t_len))
+        if idx == num_lines - 1:
+            ce = t_len
+        built_syl[cs:ce] = int(syl_list[idx])
+        built_rep[cs:ce] = int(rep_list[idx])
+
+    return (
+        f_syl if f_syl is not None else built_syl,
+        f_rep if f_rep is not None else built_rep,
+    )
+
+
 class LyricStreamingGenerator:
-    """순환 링 버퍼와 KV 캐시 및 음절·섹션 조건을 유지하며 실시간 가사·보컬 번역을 수행하는 생성기입니다."""
+    """순환 링 버퍼와 KV 캐시 및 프레임별 음절·반복·섹션 조건을 유지하며 실시간 가사·보컬 번역을 수행하는 생성기입니다."""
 
     def __init__(
         self,
@@ -78,8 +154,11 @@ class LyricStreamingGenerator:
         sim_bin: Optional[int] = None,
         section_type_id: int = 2,
         default_target_syllables: int = 8,
+        default_repeat_group_id: int = 0,
+        frame_target_syllables: Optional[torch.Tensor] = None,
+        frame_repeat_group_ids: Optional[torch.Tensor] = None,
     ):
-        """모델, 배치 크기, CFG 계수, 보컬 유사도, 섹션 타입, 목표 음절 수 및 순환 지연 버퍼를 초기화합니다."""
+        """모델, 배치 크기, CFG 계수, 보컬 유사도, 섹션 타입, 프레임별 음절·반복 조건 스케줄 및 순환 지연 버퍼를 초기화합니다."""
         self.model = model
         self.cfg = model.cfg
         self.batch_size = batch_size
@@ -107,7 +186,6 @@ class LyricStreamingGenerator:
         self.initial_tokens = model.get_initial_tokens(batch_size, device)
         self.step_offset = 0
 
-        use_cfg = self.cfg_coef != 1.0
         self.temporal_kv = model.temporal_transformer.init_kv_caches()
 
         resolved_sim_bin = (
@@ -120,46 +198,108 @@ class LyricStreamingGenerator:
         self.default_target_syllables = max(
             1, min(self.cfg.max_syllables_per_line, int(default_target_syllables))
         )
+        self.default_repeat_group_id = max(
+            0, min(self.cfg.max_repeat_groups - 1, int(default_repeat_group_id))
+        )
 
+        self.frame_target_syllables = (
+            frame_target_syllables.detach().to(device=device, dtype=torch.long).reshape(-1)
+            if (isinstance(frame_target_syllables, torch.Tensor) and frame_target_syllables.numel() > 0)
+            else None
+        )
+        self.frame_repeat_group_ids = (
+            frame_repeat_group_ids.detach().to(device=device, dtype=torch.long).reshape(-1)
+            if (isinstance(frame_repeat_group_ids, torch.Tensor) and frame_repeat_group_ids.numel() > 0)
+            else None
+        )
+        self._cond_cache: dict[tuple[int, int], torch.Tensor] = {}
+
+    def _get_step_cond_emb(
+        self,
+        step_idx: int,
+        target_syllables: Optional[int] = None,
+        repeat_group_id: Optional[int] = None,
+    ) -> Optional[torch.Tensor]:
+        """현재 프레임(`step_idx`)에 적용할 목표 음절 수 및 반복 그룹 조건 임베딩(`[B, 1, D]` 또는 `[2B, 1, D]`)을 반환합니다."""
+        if target_syllables is not None:
+            syl_val = int(target_syllables)
+        elif self.frame_target_syllables is not None:
+            idx = min(max(0, step_idx), int(self.frame_target_syllables.numel()) - 1)
+            syl_val = int(self.frame_target_syllables[idx].item())
+        else:
+            syl_val = self.default_target_syllables
+
+        if repeat_group_id is not None:
+            rep_val = int(repeat_group_id)
+        elif self.frame_repeat_group_ids is not None:
+            idx = min(max(0, step_idx), int(self.frame_repeat_group_ids.numel()) - 1)
+            rep_val = int(self.frame_repeat_group_ids[idx].item())
+        else:
+            rep_val = self.default_repeat_group_id
+
+        syl_clamped = max(1, min(self.cfg.max_syllables_per_line, syl_val))
+        rep_clamped = max(0, min(self.cfg.max_repeat_groups - 1, rep_val))
+        cache_key = (syl_clamped, rep_clamped)
+        cached = self._cond_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        use_cfg = self.cfg_coef != 1.0
         cond_bins = torch.full(
-            (batch_size,), resolved_sim_bin, dtype=torch.long, device=device
+            (self.batch_size,), self.sim_bin, dtype=torch.long, device=self.device
         )
         cond_secs = torch.full(
-            (batch_size,), self.section_type_id, dtype=torch.long, device=device
+            (self.batch_size,), self.section_type_id, dtype=torch.long, device=self.device
         )
         cond_syls = torch.full(
-            (batch_size,), self.default_target_syllables, dtype=torch.long, device=device
+            (self.batch_size,), syl_clamped, dtype=torch.long, device=self.device
+        )
+        cond_reps = torch.full(
+            (self.batch_size,), rep_clamped, dtype=torch.long, device=self.device
         )
         if use_cfg:
             null_bins = torch.full(
-                (batch_size,),
-                model.structure_cond.null_idx,
+                (self.batch_size,),
+                self.model.structure_cond.null_idx,
                 dtype=torch.long,
-                device=device,
+                device=self.device,
             )
             null_secs = torch.full(
-                (batch_size,),
+                (self.batch_size,),
                 self.cfg.num_section_types,
                 dtype=torch.long,
-                device=device,
+                device=self.device,
             )
-            null_syls = torch.zeros((batch_size,), dtype=torch.long, device=device)
+            null_syls = torch.zeros((self.batch_size,), dtype=torch.long, device=self.device)
+            null_reps = torch.full(
+                (self.batch_size,),
+                self.cfg.max_repeat_groups,
+                dtype=torch.long,
+                device=self.device,
+            )
             all_bins = torch.cat([cond_bins, null_bins], dim=0)
             all_secs = torch.cat([cond_secs, null_secs], dim=0)
             all_syls = torch.cat([cond_syls, null_syls], dim=0)
+            all_reps = torch.cat([cond_reps, null_reps], dim=0)
         else:
             all_bins = cond_bins
             all_secs = cond_secs
             all_syls = cond_syls
+            all_reps = cond_reps
 
         with torch.no_grad():
-            cond_e = model.build_condition_embedding(
+            cond_e = self.model.build_condition_embedding(
                 speaker_sim_bins=all_bins,
                 target_syllables=all_syls,
                 section_types=all_secs,
+                repeat_group_ids=all_reps,
                 cfg_dropout_prob=0.0,
             )
-            self.cond_emb = cond_e.detach() if cond_e is not None else None
+            if cond_e is None:
+                return None
+            detached = cond_e.detach()
+            self._cond_cache[cache_key] = detached
+            return detached
 
     def reset(self) -> None:
         """순환 버퍼, 스텝 카운터 및 Temporal KV 캐시를 초기 상태로 리셋합니다."""
@@ -172,6 +312,8 @@ class LyricStreamingGenerator:
         self,
         source_audio_tokens: torch.Tensor,
         suppress_eos: Optional[bool] = None,
+        target_syllables: Optional[int] = None,
+        repeat_group_id: Optional[int] = None,
     ) -> Optional[tuple[torch.Tensor, torch.Tensor]]:
         """소스 보컬 오디오 1프레임(`[B, Q, 1]`)을 입력받아 지연 정렬된 타깃 가사·보컬 프레임을 생성합니다."""
         bsz, q_in, s_len = source_audio_tokens.shape
@@ -200,8 +342,13 @@ class LyricStreamingGenerator:
 
             use_cfg = self.cfg_coef != 1.0
             temporal_in = cur_in.repeat(2, 1, 1) if use_cfg else cur_in
+            step_cond_emb = self._get_step_cond_emb(
+                step_idx=self.step_offset,
+                target_syllables=target_syllables,
+                repeat_group_id=repeat_group_id,
+            )
             z_t, text_logits = self.model.forward_temporal(
-                temporal_in, cond_emb=self.cond_emb, kv_caches=self.temporal_kv
+                temporal_in, cond_emb=step_cond_emb, kv_caches=self.temporal_kv
             )
             t_logits_step = text_logits[:, 0, 0, :].float()
             if use_cfg:
@@ -391,6 +538,8 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
         f"행별 목표 음절 수={target_syllables} | 반복 그룹={repeat_group_ids}"
     )
 
+    guide_start_frames: Optional[List[int]] = None
+    guide_end_frames: Optional[List[int]] = None
     if args.input_wav is not None:
         if not args.input_wav.exists():
             raise FileNotFoundError(f"입력 WAV 파일을 찾을 수 없습니다: {args.input_wav}")
@@ -399,7 +548,7 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
         )
         src_wav = wav.unsqueeze(0).to(device)
     else:
-        guide_wav, _, _ = synthesize_rhythm_guide_waveform(
+        guide_wav, guide_start_frames, guide_end_frames = synthesize_rhythm_guide_waveform(
             syllable_counts=target_syllables,
             sample_rate=cfg.sample_rate,
             sec_per_syllable=0.18,
@@ -422,6 +571,14 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
         silence_code = codec.encode(silence_frames)[:, :, -1:]
 
     num_frames = src_codes.shape[-1]
+    frame_syl_sched, frame_rep_sched = build_frame_condition_schedules(
+        total_frames=num_frames,
+        target_syllables=target_syllables,
+        repeat_group_ids=repeat_group_ids,
+        src_start_frames=guide_start_frames,
+        src_end_frames=guide_end_frames,
+        default_target_syllables=avg_target_syl,
+    )
     streamer = LyricStreamingGenerator(
         model,
         batch_size=1,
@@ -433,6 +590,8 @@ def run_streaming_inference(args: argparse.Namespace) -> None:
         sim_bin=resolved_sim_bin,
         section_type_id=sec_type_id,
         default_target_syllables=avg_target_syl,
+        frame_target_syllables=frame_syl_sched,
+        frame_repeat_group_ids=frame_rep_sched,
     )
 
     emitted_texts: list[int] = []
@@ -672,13 +831,24 @@ def run_bottom_up_verification(preset: str = "tiny") -> None:
     )
     g_bins = torch.full((2,), 4, dtype=torch.long, device=device)
     g_secs = torch.full((2,), 2, dtype=torch.long, device=device)
-    g_syl = torch.full((2, rollout.rollout_codes.shape[2]), 10, dtype=torch.long, device=device)
+    roll_t = rollout.rollout_codes.shape[2]
+    g_syl = (
+        rollout.frame_target_syllables[:roll_t].unsqueeze(0).expand(2, -1).to(device)
+        if rollout.frame_target_syllables is not None
+        else torch.full((2, roll_t), 10, dtype=torch.long, device=device)
+    )
+    g_rep = (
+        rollout.frame_repeat_group_ids[:roll_t].unsqueeze(0).expand(2, -1).to(device)
+        if rollout.frame_repeat_group_ids is not None
+        else torch.zeros((2, roll_t), dtype=torch.long, device=device)
+    )
     with torch.no_grad():
         old_lp = policy.compute_token_log_probs(
             rollout.rollout_codes,
             speaker_sim_bins=g_bins,
             target_syllables=g_syl,
             section_types=g_secs,
+            repeat_group_ids=g_rep,
             temp_text=0.8,
             temp_audio=0.8,
             top_k_text=50,
@@ -696,6 +866,7 @@ def run_bottom_up_verification(preset: str = "tiny") -> None:
         ref_lp=old_lp,
         target_syllables=g_syl,
         section_types=g_secs,
+        repeat_group_ids=g_rep,
         temp_text=0.8,
         temp_audio=0.8,
         top_k_text=50,
@@ -712,12 +883,22 @@ def run_bottom_up_verification(preset: str = "tiny") -> None:
     )
 
     policy.eval()
+    infer_syl_sched, infer_rep_sched = build_frame_condition_schedules(
+        total_frames=num_frames,
+        target_syllables=prompt.target_syllables,
+        repeat_group_ids=prompt.repeat_group_ids,
+        src_start_frames=prompt.src_start_frames,
+        src_end_frames=prompt.src_end_frames,
+        default_target_syllables=10,
+    )
     streamer = LyricStreamingGenerator(
         policy,
         batch_size=1,
         cfg_coef=2.0,
         section_type_id=2,
         default_target_syllables=10,
+        frame_target_syllables=infer_syl_sched,
+        frame_repeat_group_ids=infer_rep_sched,
     )
     emitted_texts: list[int] = []
     emitted_audio_frames: list[torch.Tensor] = []

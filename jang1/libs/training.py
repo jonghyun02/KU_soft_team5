@@ -102,6 +102,7 @@ class PreprocessedPtDataset:
         self.text_eos_id = text_eos_id
         self.num_speaker_sim_bins = num_speaker_sim_bins
         self._validated_indices: set[int] = set()
+        self._warned_crop_eos = False
 
         _ = self._load_and_validate(0)
 
@@ -147,6 +148,15 @@ class PreprocessedPtDataset:
         """인덱스에 해당하는 멀티스트림 시퀀스와 음절·섹션 조건 텐서들을 반환합니다."""
         codes, sim_bin, sec_type_id, f_syl, f_rep = self._load_and_validate(idx)
         if codes.shape[1] > self.crop_frames:
+            if (
+                not self._warned_crop_eos
+                and bool((codes[0, self.crop_frames :] == self.text_eos_id).any().item())
+            ):
+                self._warned_crop_eos = True
+                print(
+                    f"[TrainSFT] WARNING: {self.files[idx].name}의 길이({codes.shape[1]})가 "
+                    f"crop_frames({self.crop_frames})를 초과하여 끝부분의 EOS 토큰이 잘렸습니다."
+                )
             codes = codes[:, : self.crop_frames]
             f_syl = f_syl[: self.crop_frames]
             f_rep = f_rep[: self.crop_frames]

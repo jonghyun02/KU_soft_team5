@@ -21,7 +21,7 @@ from libs.phonetics import (
     compute_ssm_alignment_score,
     count_line_syllables,
 )
-from libs.streaming import LyricStreamingGenerator
+from libs.streaming import LyricStreamingGenerator, build_frame_condition_schedules
 from libs.tokenizer import split_rendered_section_lines
 from libs.training import list_preprocessed_pt_files, load_and_validate_pt_item
 
@@ -211,9 +211,17 @@ class GRPOPromptDataset:
             )
 
         raw_f_syl = item.get("frame_target_syllables")
-        f_syl = raw_f_syl.long() if isinstance(raw_f_syl, torch.Tensor) else None
+        f_syl = (
+            raw_f_syl[:src_len].long().contiguous()
+            if isinstance(raw_f_syl, torch.Tensor) and raw_f_syl.numel() > 0
+            else None
+        )
         raw_f_rep = item.get("frame_repeat_group_ids")
-        f_rep = raw_f_rep.long() if isinstance(raw_f_rep, torch.Tensor) else None
+        f_rep = (
+            raw_f_rep[:src_len].long().contiguous()
+            if isinstance(raw_f_rep, torch.Tensor) and raw_f_rep.numel() > 0
+            else None
+        )
 
         sim_bin = max(0, min(self.cfg.num_speaker_sim_bins - 1, raw_sim_bin))
         section_type_id = int(item.get("section_type_id", 2))
@@ -305,6 +313,17 @@ def rollout_group_trajectories(
         if prompt.target_syllables
         else 8
     )
+    full_sched_len = src_len + max_tail_frames + max(cfg.delays) + 4
+    frame_syl_sched, frame_rep_sched = build_frame_condition_schedules(
+        total_frames=full_sched_len,
+        target_syllables=prompt.target_syllables,
+        repeat_group_ids=prompt.repeat_group_ids,
+        src_start_frames=prompt.src_start_frames,
+        src_end_frames=prompt.src_end_frames,
+        frame_target_syllables=prompt.frame_target_syllables,
+        frame_repeat_group_ids=prompt.frame_repeat_group_ids,
+        default_target_syllables=avg_target_syl,
+    )
 
     was_training = model.training
     model.eval()
@@ -320,6 +339,8 @@ def rollout_group_trajectories(
             sim_bin=prompt.sim_bin,
             section_type_id=prompt.section_type_id,
             default_target_syllables=avg_target_syl,
+            frame_target_syllables=frame_syl_sched,
+            frame_repeat_group_ids=frame_rep_sched,
         )
 
         fed_src_list: List[torch.Tensor] = []
@@ -408,8 +429,8 @@ def rollout_group_trajectories(
             pred_token_lists.append(toks)
             pred_token_frames.append(frames)
 
-        f_syl = torch.full((total_roll_t,), avg_target_syl, dtype=torch.long)
-        f_rep = torch.zeros(total_roll_t, dtype=torch.long)
+        f_syl = frame_syl_sched[:total_roll_t].clone()
+        f_rep = frame_rep_sched[:total_roll_t].clone()
 
         return RolloutBatch(
             rollout_codes=rollout_codes,
@@ -480,11 +501,12 @@ def evaluate_rollout_group_rewards(
     """arXiv:2309.11093의 4대 싱어빌리티 지표(BLEU, 음절 정합 1-SCD, 반복 행렬 SSM, 각운·반복 일관성)를 결합해 그룹 상대 우위를 산출합니다."""
     del cfg
     group_size = len(rollout.pred_token_lists)
-    ref_text_str = (
-        sp_decode_fn(prompt.ref_tokens)
-        if (sp_decode_fn is not None and prompt.ref_tokens)
-        else (" ".join(prompt.tgt_lines) if prompt.tgt_lines else None)
-    )
+    if prompt.tgt_lines:
+        ref_clean_str: Optional[str] = " ".join(prompt.tgt_lines)
+    elif sp_decode_fn is not None and prompt.ref_tokens:
+        ref_clean_str = " ".join(split_rendered_section_lines(sp_decode_fn(prompt.ref_tokens)))
+    else:
+        ref_clean_str = None
     target_syllables = (
         prompt.target_syllables
         if prompt.target_syllables
@@ -504,23 +526,23 @@ def evaluate_rollout_group_rewards(
         pred_frames = rollout.pred_token_frames[g]
         v_len = rollout.valid_lengths[g]
 
-        tok_bleu = compute_smoothed_bleu(pred_toks, prompt.ref_tokens)
-        if sp_decode_fn is not None and ref_text_str is not None and pred_toks:
-            pred_str = sp_decode_fn(pred_toks)
-            char_bleu = compute_smoothed_bleu(
-                [ch for ch in pred_str if not ch.isspace()],
-                [ch for ch in ref_text_str if not ch.isspace()],
-            )
-            bleu_val = 0.6 * tok_bleu + 0.4 * char_bleu
-        else:
-            bleu_val = tok_bleu
-
         pred_lines, pred_syls = _extract_predicted_lines_and_syllables(
             pred_toks=pred_toks,
             pred_frames=pred_frames,
             prompt=prompt,
             sp_decode_fn=sp_decode_fn,
         )
+
+        tok_bleu = compute_smoothed_bleu(pred_toks, prompt.ref_tokens)
+        if sp_decode_fn is not None and ref_clean_str is not None and pred_toks:
+            pred_clean_str = " ".join(pred_lines)
+            char_bleu = compute_smoothed_bleu(
+                [ch for ch in pred_clean_str if not ch.isspace()],
+                [ch for ch in ref_clean_str if not ch.isspace()],
+            )
+            bleu_val = 0.6 * tok_bleu + 0.4 * char_bleu
+        else:
+            bleu_val = tok_bleu
 
         scd_val, _ = compute_section_scd(target_syllables, pred_syls)
         syl_score = max(0.0, min(1.0, 1.0 - scd_val))

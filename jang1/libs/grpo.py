@@ -507,8 +507,37 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                 if prompt.target_syllables
                 else 8
             )
-            batch_syl = torch.full((args.group_size, roll_t), avg_syl, dtype=torch.long, device=device)
-            batch_rep = torch.zeros((args.group_size, roll_t), dtype=torch.long, device=device)
+            if (
+                rollout.frame_target_syllables is not None
+                and rollout.frame_target_syllables.numel() >= roll_t
+            ):
+                batch_syl = (
+                    rollout.frame_target_syllables[:roll_t]
+                    .unsqueeze(0)
+                    .expand(args.group_size, -1)
+                    .contiguous()
+                    .to(device)
+                )
+            else:
+                batch_syl = torch.full(
+                    (args.group_size, roll_t), avg_syl, dtype=torch.long, device=device
+                )
+
+            if (
+                rollout.frame_repeat_group_ids is not None
+                and rollout.frame_repeat_group_ids.numel() >= roll_t
+            ):
+                batch_rep = (
+                    rollout.frame_repeat_group_ids[:roll_t]
+                    .unsqueeze(0)
+                    .expand(args.group_size, -1)
+                    .contiguous()
+                    .to(device)
+                )
+            else:
+                batch_rep = torch.zeros(
+                    (args.group_size, roll_t), dtype=torch.long, device=device
+                )
 
             _, advantages, r_stats = evaluate_rollout_group_rewards(
                 prompt=prompt,

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
-from libs.phonetics import normalize_lyric_text
+from libs.phonetics import count_korean_syllables, normalize_lyric_text
 from libs.preprocessing_common import (
     LyricSectionUnit,
     batched_pool_map,
@@ -115,7 +115,7 @@ _SYNTHETIC_KPOP_SONGS: Tuple[Tuple[str, Tuple[Tuple[str, Tuple[Tuple[str, str], 
                 "chorus",
                 (
                     ("다시 만날 수 있을까 우리 둘이서", "Will we ever meet again together you and I"),
-                    ("하얀 꽃잎이 흩날리는 이 거리에서", "Walking down the avenue beneath thepetal sky"),
+                    ("하얀 꽃잎이 흩날리는 이 거리에서", "Walking down the avenue beneath the petal sky"),
                     ("다시 만날 수 있을까 우리 둘이서", "Will we ever meet again together you and I"),
                     ("Oh 내 마음은 언제나 너를 향해 있어", "Oh my heart is always waiting for you every day"),
                 ),
@@ -312,6 +312,16 @@ def _parse_single_lyric_file(
             if u is not None:
                 units.extend(slice_long_section_unit(u, max_lines=max_lines_per_section))
 
+    def _order_ko_en(
+        lines_a: Sequence[str],
+        lines_b: Sequence[str],
+    ) -> Tuple[List[str], List[str]]:
+        ko_a = sum(count_korean_syllables(x) for x in lines_a)
+        ko_b = sum(count_korean_syllables(x) for x in lines_b)
+        if ko_b > ko_a:
+            return [str(x) for x in lines_b], [str(x) for x in lines_a]
+        return [str(x) for x in lines_a], [str(x) for x in lines_b]
+
     try:
         if sfx == ".jsonl":
             lines_raw = file_path.read_text(encoding="utf-8-sig").splitlines()
@@ -320,10 +330,9 @@ def _parse_single_lyric_file(
                     continue
                 item = json.loads(ln)
                 if isinstance(item, dict) and "src" in item and "tgt" in item:
-                    src_list = [str(x) for x in item["src"]]
-                    tgt_list = [str(x) for x in item["tgt"]]
-                    sec_type = str(item.get("section_type", "chorus" if len(src_list) > 2 else "verse"))
-                    _add_section(f"{file_path.stem}_{idx:05d}", 0, sec_type, src_list, tgt_list)
+                    ko_l, en_l = _order_ko_en(item["src"], item["tgt"])
+                    sec_type = str(item.get("section_type", "chorus" if len(ko_l) > 2 else "verse"))
+                    _add_section(f"{file_path.stem}_{idx:05d}", 0, sec_type, ko_l, en_l)
             return units
 
         if sfx == ".json":
