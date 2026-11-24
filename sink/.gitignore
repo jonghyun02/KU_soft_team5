@@ -29,3 +29,7 @@ __pycache__/
 # oh-my-claudecode 실행 상태(명세 .omc/specs 는 남김)
 .omc/*
 !.omc/specs/
+
+# 영화 대본 원문(저작물)은 올리지 않는다. 로컬에만 둔다
+tests/gold/*.jsonl
+tests/fixtures/parse/
