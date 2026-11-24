@@ -205,6 +205,12 @@ def build_train_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping norm")
     parser.add_argument("--cfg-dropout", type=float, default=0.1, help="CFG 조건 드롭아웃 확률")
     parser.add_argument("--no-amp", action="store_true", help="CUDA 혼합 정밀도 비활성화")
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=200,
+        help="에폭 도중 중간 체크포인트를 자동 저장할 옵티마이저 스텝 주기 (0이면 에폭 종료 시에만 저장, 기본값: 200)",
+    )
     parser.add_argument("--save-path", type=Path, default=get_default_checkpoint_path(), help="체크포인트 저장 경로")
     parser.add_argument("--seed", type=int, default=42, help="랜덤 시드")
     return parser
@@ -239,7 +245,15 @@ def build_grpo_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--hooks-module", type=str, default=None, help="custom_reward_fn 제공 모듈명")
 
-    parser.add_argument("--group-size", type=int, default=4, help="프롬프트당 롤아웃 그룹 크기 G")
+    parser.add_argument(
+        "--group-size",
+        "--batch-size",
+        dest="group_size",
+        type=int,
+        default=4,
+        help="프롬프트당 롤아웃 그룹(배치) 크기 G",
+    )
+    parser.add_argument("--num-workers", type=int, default=0, help="데이터 로더 워커 수 (호환용)")
     parser.add_argument("--ppo-epochs", type=int, default=1, help="그룹당 내부 정책 업데이트 횟수")
     parser.add_argument("--clip-eps", type=float, default=0.2, help="중요도 비율 클리핑 범위")
     parser.add_argument("--kl-coef", type=float, default=0.02, help="기준 모델 대비 KL 페널티 계수")
@@ -318,6 +332,12 @@ def build_grpo_parser() -> argparse.ArgumentParser:
         help="학습률 감쇠 직후 정체 카운트를 유예할 옵티마이저 스텝 수 (기본값: 200)",
     )
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping norm")
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=50,
+        help="에폭 도중 중간 체크포인트를 자동 저장할 옵티마이저 스텝 주기 (0이면 에폭 종료 시에만 저장, 기본값: 50)",
+    )
     parser.add_argument("--no-amp", action="store_true", help="CUDA 혼합 정밀도 비활성화")
     parser.add_argument("--seed", type=int, default=42, help="랜덤 시드")
     return parser

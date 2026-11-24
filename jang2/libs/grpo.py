@@ -620,6 +620,42 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                             step_metric=avg_r_stats["reward_mean"],
                         ):
                             global_step += 1
+                            save_every = int(getattr(args, "save_every", 0))
+                            if (
+                                save_every > 0
+                                and global_step % save_every == 0
+                                and not is_last_prompt
+                            ):
+                                mid_ckpt = {
+                                    "config": asdict(cfg),
+                                    "stage": "grpo_stage2",
+                                    "codec_type": codec_type,
+                                    "optim_type": optim_type,
+                                    "rollout_cfg_coef": float(args.rollout_cfg_coef),
+                                    "default_sim_bin": int(default_sim_bin),
+                                    "best_val_reward": best_val_reward,
+                                    "model_state_dict": policy_model.state_dict(),
+                                    "optimizer_state_dict": sanitize_optimizer_state_for_save(
+                                        optimizer.state_dict()
+                                    ),
+                                    "scheduler_state_dict": scheduler.state_dict(),
+                                    "scaler_state_dict": (
+                                        amp.scaler.state_dict()
+                                        if amp.scaler.is_enabled()
+                                        else None
+                                    ),
+                                    "epoch": max(0, epoch - 1),
+                                    "global_step": global_step,
+                                    "last_metrics": dict(avg_r_stats),
+                                }
+                                if demo_codec is not None:
+                                    mid_ckpt["codec_state_dict"] = demo_codec.state_dict()
+                                elif saved_codec_state is not None:
+                                    mid_ckpt["codec_state_dict"] = saved_codec_state
+                                atomic_torch_save(mid_ckpt, args.save_path)
+                                print(
+                                    f"  [Checkpoint] Stage 2 중간 체크포인트 자동 저장 완료 (opt={global_step}): {args.save_path}"
+                                )
 
                     step_loss_metrics = _average_metric_dicts(collected_losses)
 

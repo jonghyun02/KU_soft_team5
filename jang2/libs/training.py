@@ -326,6 +326,7 @@ def run_sft_training(args: argparse.Namespace) -> None:
             shuffle=True,
             num_workers=args.num_workers,
             pin_memory=(device.type == "cuda"),
+            persistent_workers=(args.num_workers > 0),
             collate_fn=CollatePad(pad_value=cfg.zero_token_id),
         )
         batches_per_epoch = len(dataloader)
@@ -349,6 +350,7 @@ def run_sft_training(args: argparse.Namespace) -> None:
                 shuffle=False,
                 num_workers=args.num_workers,
                 pin_memory=(device.type == "cuda"),
+                persistent_workers=(args.num_workers > 0),
                 collate_fn=CollatePad(pad_value=cfg.zero_token_id),
             )
             print(f"[Train] 검증(val) 데이터셋 로드 완료: {len(val_dataset)}개 샘플 ({val_dir})")
@@ -504,6 +506,39 @@ def run_sft_training(args: argparse.Namespace) -> None:
                     step_metric=step_avg_loss,
                 ):
                     global_step += 1
+                    save_every = int(getattr(args, "save_every", 0))
+                    if save_every > 0 and global_step % save_every == 0 and not is_last_batch:
+                        mid_sim_bin = (
+                            max(seen_sim_bins)
+                            if seen_sim_bins
+                            else (cfg.num_speaker_sim_bins - 1)
+                        )
+                        mid_ckpt = {
+                            "config": asdict(cfg),
+                            "stage": "sft_stage1",
+                            "codec_type": codec_type,
+                            "optim_type": optim_type,
+                            "default_sim_bin": int(mid_sim_bin),
+                            "seen_sim_bins": sorted(seen_sim_bins),
+                            "best_val_loss": best_val_loss,
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": sanitize_optimizer_state_for_save(
+                                optimizer.state_dict()
+                            ),
+                            "scheduler_state_dict": scheduler.state_dict(),
+                            "scaler_state_dict": (
+                                amp.scaler.state_dict() if amp.scaler.is_enabled() else None
+                            ),
+                            "epoch": max(0, epoch - 1),
+                            "global_step": global_step,
+                            "last_metrics": dict(metrics),
+                        }
+                        if codec is not None:
+                            mid_ckpt["codec_state_dict"] = codec.state_dict()
+                        atomic_torch_save(mid_ckpt, args.save_path)
+                        print(
+                            f"  [Checkpoint] 중간 체크포인트 자동 저장 완료 (opt_step={global_step}): {args.save_path}"
+                        )
 
             epoch_loss += metrics["loss"]
             num_steps += 1
