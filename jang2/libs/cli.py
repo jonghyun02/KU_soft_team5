@@ -166,6 +166,42 @@ def build_train_parser() -> argparse.ArgumentParser:
         help="BF16 지원 GPU(L4/A100/RTX 40·50 등)에서 가중치·그래디언트를 BF16으로 유지해 VRAM 50%% 추가 절감",
     )
     parser.add_argument("--warmup-steps", type=int, default=None, help="LR 워밍업 옵티마이저 스텝 수")
+    parser.add_argument(
+        "--lr-patience",
+        type=int,
+        default=2500,
+        help="손실 EMA 미개선 시 학습률을 자동 감쇠할 옵티마이저 스텝 인내 횟수 (0이면 비활성, 기본값: 2500)",
+    )
+    parser.add_argument(
+        "--lr-epoch-patience",
+        type=int,
+        default=1,
+        help="에폭(검증) 손실 미개선 시 학습률을 감쇠할 에폭 인내 횟수 (0이면 비활성, 기본값: 1)",
+    )
+    parser.add_argument(
+        "--lr-factor",
+        type=float,
+        default=0.5,
+        help="손실 정체 감지 시 현재 학습률에 곱할 감쇠 비율 (기본값: 0.5)",
+    )
+    parser.add_argument(
+        "--lr-min-ratio",
+        type=float,
+        default=0.02,
+        help="초기 학습률 대비 정체 감쇠 후 허용되는 최소 학습률 비율 (기본값: 0.02)",
+    )
+    parser.add_argument(
+        "--lr-threshold",
+        type=float,
+        default=1e-3,
+        help="손실 개선으로 인정할 최소 상대 변화율 임계값 (기본값: 1e-3)",
+    )
+    parser.add_argument(
+        "--lr-cooldown",
+        type=int,
+        default=500,
+        help="학습률 감쇠 직후 정체 카운트를 유예할 옵티마이저 스텝 수 (기본값: 500)",
+    )
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping norm")
     parser.add_argument("--cfg-dropout", type=float, default=0.1, help="CFG 조건 드롭아웃 확률")
     parser.add_argument("--no-amp", action="store_true", help="CUDA 혼합 정밀도 비활성화")
@@ -245,6 +281,42 @@ def build_grpo_parser() -> argparse.ArgumentParser:
         help="BF16 지원 GPU에서 정책 모델 가중치·그래디언트를 BF16으로 유지해 VRAM 50%% 추가 절감",
     )
     parser.add_argument("--warmup-steps", type=int, default=None, help="워밍업 스텝 수")
+    parser.add_argument(
+        "--lr-patience",
+        type=int,
+        default=1000,
+        help="보상 EMA 미개선 시 학습률을 자동 감쇠할 옵티마이저 스텝 인내 횟수 (0이면 비활성, 기본값: 1000)",
+    )
+    parser.add_argument(
+        "--lr-epoch-patience",
+        type=int,
+        default=1,
+        help="에폭(검증) 보상 미개선 시 학습률을 감쇠할 에폭 인내 횟수 (0이면 비활성, 기본값: 1)",
+    )
+    parser.add_argument(
+        "--lr-factor",
+        type=float,
+        default=0.5,
+        help="보상 정체 감지 시 현재 학습률에 곱할 감쇠 비율 (기본값: 0.5)",
+    )
+    parser.add_argument(
+        "--lr-min-ratio",
+        type=float,
+        default=0.02,
+        help="초기 학습률 대비 정체 감쇠 후 허용되는 최소 학습률 비율 (기본값: 0.02)",
+    )
+    parser.add_argument(
+        "--lr-threshold",
+        type=float,
+        default=1e-3,
+        help="보상 개선으로 인정할 최소 상대 변화율 임계값 (기본값: 1e-3)",
+    )
+    parser.add_argument(
+        "--lr-cooldown",
+        type=int,
+        default=200,
+        help="학습률 감쇠 직후 정체 카운트를 유예할 옵티마이저 스텝 수 (기본값: 200)",
+    )
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping norm")
     parser.add_argument("--no-amp", action="store_true", help="CUDA 혼합 정밀도 비활성화")
     parser.add_argument("--seed", type=int, default=42, help="랜덤 시드")

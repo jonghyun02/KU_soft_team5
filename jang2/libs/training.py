@@ -379,7 +379,16 @@ def run_sft_training(args: argparse.Namespace) -> None:
         tag="Train",
     )
     scheduler = build_warmup_cosine_scheduler(
-        optimizer, total_updates=total_updates, warmup_steps=warmup_steps
+        optimizer,
+        total_updates=total_updates,
+        warmup_steps=warmup_steps,
+        min_total_ratio=float(getattr(args, "lr_min_ratio", 0.02)),
+        mode="min",
+        patience=int(getattr(args, "lr_patience", 2500)),
+        epoch_patience=int(getattr(args, "lr_epoch_patience", 1)),
+        factor=float(getattr(args, "lr_factor", 0.5)),
+        threshold=float(getattr(args, "lr_threshold", 1e-3)),
+        cooldown=int(getattr(args, "lr_cooldown", 500)),
     )
     amp = resolve_amp_context(device=device, no_amp=args.no_amp)
 
@@ -449,6 +458,8 @@ def run_sft_training(args: argparse.Namespace) -> None:
         full_accum_batches = (
             num_batches // args.grad_accum_steps
         ) * args.grad_accum_steps
+        accum_loss_sum = 0.0
+        accum_loss_count = 0
 
         for step, (codes, sim_bins) in enumerate(batch_iter, start=1):
             seen_sim_bins.update(int(x) for x in sim_bins.detach().cpu().tolist())
@@ -477,13 +488,20 @@ def run_sft_training(args: argparse.Namespace) -> None:
             else:
                 scaled_loss.backward()
 
+            accum_loss_sum += metrics["loss"]
+            accum_loss_count += 1
+
             if step % args.grad_accum_steps == 0 or is_last_batch:
+                step_avg_loss = accum_loss_sum / max(1, accum_loss_count)
+                accum_loss_sum = 0.0
+                accum_loss_count = 0
                 if step_optimizer_with_clip(
                     model=model,
                     optimizer=optimizer,
                     scheduler=scheduler,
                     scaler=amp.scaler,
                     grad_clip=args.grad_clip,
+                    step_metric=step_avg_loss,
                 ):
                     global_step += 1
 
@@ -502,10 +520,12 @@ def run_sft_training(args: argparse.Namespace) -> None:
         avg_loss = epoch_loss / max(1, num_steps)
         val_msg = ""
         improved_val = False
+        epoch_monitor_loss = avg_loss
         if val_dataloader is not None:
             val_metrics = _evaluate_sft_validation(model, val_dataloader, device, amp)
             last_metrics.update(val_metrics)
             val_loss = val_metrics["val_loss"]
+            epoch_monitor_loss = val_loss
             val_msg = (
                 f" | val_loss={val_loss:.4f} "
                 f"(text={val_metrics['val_text_loss']:.4f}, audio={val_metrics['val_audio_loss']:.4f})"
@@ -514,6 +534,7 @@ def run_sft_training(args: argparse.Namespace) -> None:
                 best_val_loss = val_loss
                 improved_val = True
 
+        scheduler.observe_epoch_metric(epoch_monitor_loss)
         print(f"[Epoch {epoch}/{args.epochs} 완료] avg_loss={avg_loss:.4f}{val_msg}")
 
         default_sim_bin = (

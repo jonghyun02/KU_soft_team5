@@ -378,7 +378,16 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         tag="GRPO",
     )
     scheduler = build_warmup_cosine_scheduler(
-        optimizer, total_updates=total_updates, warmup_steps=warmup_steps
+        optimizer,
+        total_updates=total_updates,
+        warmup_steps=warmup_steps,
+        min_total_ratio=float(getattr(args, "lr_min_ratio", 0.02)),
+        mode="max",
+        patience=int(getattr(args, "lr_patience", 1000)),
+        epoch_patience=int(getattr(args, "lr_epoch_patience", 1)),
+        factor=float(getattr(args, "lr_factor", 0.5)),
+        threshold=float(getattr(args, "lr_threshold", 1e-3)),
+        cooldown=int(getattr(args, "lr_cooldown", 200)),
     )
     amp = resolve_amp_context(device=device, no_amp=args.no_amp)
 
@@ -608,6 +617,7 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                             scheduler=scheduler,
                             scaler=amp.scaler,
                             grad_clip=args.grad_clip,
+                            step_metric=avg_r_stats["reward_mean"],
                         ):
                             global_step += 1
 
@@ -627,8 +637,10 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                     )
 
         n_p = float(max(1, prompts_per_epoch))
+        epoch_avg_reward = epoch_reward_sum / n_p
         val_msg = ""
         improved_val = False
+        epoch_monitor_reward = epoch_avg_reward
         if val_dataset is not None:
             val_stats = _evaluate_grpo_validation(
                 policy_model=policy_model,
@@ -643,6 +655,7 @@ def run_grpo_training(args: argparse.Namespace) -> None:
             )
             last_metrics.update(val_stats)
             val_r = val_stats["val_reward_mean"]
+            epoch_monitor_reward = val_r
             val_msg = (
                 f" | val_R={val_r:.4f} (val_BLEU={val_stats['val_bleu_mean']:.4f}, "
                 f"val_LAAL={val_stats['val_laal_sec_mean']:.2f}s)"
@@ -651,9 +664,10 @@ def run_grpo_training(args: argparse.Namespace) -> None:
                 best_val_reward = val_r
                 improved_val = True
 
+        scheduler.observe_epoch_metric(epoch_monitor_reward)
         print(
             f"[Epoch {epoch}/{args.epochs} 완료] "
-            f"avg_reward={epoch_reward_sum / n_p:.4f} | "
+            f"avg_reward={epoch_avg_reward:.4f} | "
             f"avg_BLEU={epoch_bleu_sum / n_p:.4f} | "
             f"avg_LAAL={epoch_laal_sum / n_p:.2f}s{val_msg}"
         )

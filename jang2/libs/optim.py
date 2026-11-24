@@ -186,29 +186,232 @@ def load_optimizer_state_safely(
         )
 
 
+class WarmupCosinePlateauScheduler(torch.optim.lr_scheduler.LRScheduler):
+    """선형 워밍업 + 코사인 감쇠에 손실/보상 정체(Plateau) 감지 자동 학습률 감쇠를 결합한 스케줄러입니다."""
+
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        total_updates: int,
+        warmup_steps: int,
+        min_lr_ratio: float = 0.1,
+        min_total_ratio: float = 0.02,
+        mode: str = "min",
+        patience: int = 2500,
+        epoch_patience: int = 1,
+        factor: float = 0.5,
+        threshold: float = 1e-3,
+        cooldown: int = 500,
+        ema_alpha: float = 0.02,
+    ):
+        """워밍업·코사인 주기와 스텝/에폭 단위 정체 감지 하이퍼파라미터를 초기화합니다."""
+        if mode not in ("min", "max"):
+            raise ValueError(f"mode는 'min' 또는 'max'여야 합니다: {mode}")
+        if not (0.0 < factor < 1.0):
+            raise ValueError(f"factor({factor})는 0과 1 사이여야 합니다.")
+
+        self.total_updates = max(1, int(total_updates))
+        self.warmup_steps = max(0, min(int(warmup_steps), self.total_updates - 1))
+        self.min_lr_ratio = float(min_lr_ratio)
+        self.min_total_ratio = max(1e-5, min(float(min_total_ratio), self.min_lr_ratio))
+        self.mode = mode
+        self.patience = max(0, int(patience))
+        self.epoch_patience = max(0, int(epoch_patience))
+        self.factor = float(factor)
+        self.threshold = max(0.0, float(threshold))
+        self.cooldown = max(0, int(cooldown))
+        self.ema_alpha = max(0.01, min(1.0, float(ema_alpha)))
+
+        self.plateau_scale: float = 1.0
+        self.ema_metric: Optional[float] = None
+        self.best_metric: Optional[float] = None
+        self.num_bad_steps: int = 0
+        self.cooldown_counter: int = 0
+        self.best_epoch_metric: Optional[float] = None
+        self.num_bad_epochs: int = 0
+        self.num_reductions: int = 0
+
+        super().__init__(optimizer)
+
+    def _base_schedule_ratio(self, step: int) -> float:
+        """현재 스텝의 기본 워밍업-코사인 배율(0..1)을 계산합니다."""
+        if self.warmup_steps > 0 and step < self.warmup_steps:
+            return float(step + 1) / float(self.warmup_steps)
+        if self.total_updates <= self.warmup_steps:
+            return 1.0
+        progress = min(
+            1.0,
+            float(step - self.warmup_steps)
+            / float(self.total_updates - self.warmup_steps),
+        )
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return self.min_lr_ratio + (1.0 - self.min_lr_ratio) * cosine
+
+    def get_lr(self) -> list[float]:
+        """기본 워밍업-코사인 배율과 정체 감쇠 배율(`plateau_scale`)을 결합한 학습률 리스트를 반환합니다."""
+        step = max(0, self.last_epoch)
+        base_ratio = self._base_schedule_ratio(step)
+        if self.warmup_steps > 0 and step < self.warmup_steps:
+            eff_ratio = base_ratio * self.plateau_scale
+        else:
+            eff_ratio = max(self.min_total_ratio, base_ratio * self.plateau_scale)
+        return [base_lr * eff_ratio for base_lr in self.base_lrs]
+
+    def _is_improved(self, current: float, best: float) -> bool:
+        """현재 지표가 최고 지표 대비 유의미한 임계치(`threshold`) 이상 개선되었는지 판별합니다."""
+        margin = max(1e-6, abs(best) * self.threshold)
+        if self.mode == "min":
+            return current < (best - margin)
+        return current > (best + margin)
+
+    def _apply_current_lrs(self) -> None:
+        """갱신된 학습률을 옵티마이저 파라미터 그룹에 즉시 반영합니다."""
+        new_lrs = self.get_lr()
+        for group, lr_val in zip(self.optimizer.param_groups, new_lrs):
+            group["lr"] = lr_val
+        self._last_lr = new_lrs
+
+    def _reduce_lr(self, reason: str, cur_val: float, best_val: float) -> bool:
+        """정체 감지 시 `plateau_scale`을 `factor`만큼 축소하고 학습률을 갱신합니다."""
+        old_lr = float(self.optimizer.param_groups[0]["lr"])
+        new_scale = max(self.min_total_ratio, self.plateau_scale * self.factor)
+        if new_scale >= self.plateau_scale - 1e-9:
+            return False
+        self.plateau_scale = new_scale
+        self.num_reductions += 1
+        self.num_bad_steps = 0
+        self.cooldown_counter = self.cooldown
+        self._apply_current_lrs()
+        new_lr = float(self.optimizer.param_groups[0]["lr"])
+        if new_lr < old_lr - 1e-12:
+            print(
+                f"  [LR Plateau] {reason} (현재={cur_val:.4f}, 최고={best_val:.4f}) -> "
+                f"학습률 자동 감쇠: {old_lr:.2e} -> {new_lr:.2e} (누적 {self.num_reductions}회, scale={self.plateau_scale:.3f})"
+            )
+            return True
+        return False
+
+    def observe_step_metric(self, metric: float) -> bool:
+        """옵티마이저 스텝의 손실(또는 보상)을 지수이동평균(EMA)으로 추적하고 정체 시 학습률을 감쇠합니다."""
+        if self.patience <= 0 or not math.isfinite(metric):
+            return False
+        if self.last_epoch < self.warmup_steps:
+            return False
+
+        if self.ema_metric is None:
+            self.ema_metric = float(metric)
+        else:
+            self.ema_metric = (
+                1.0 - self.ema_alpha
+            ) * self.ema_metric + self.ema_alpha * float(metric)
+
+        if self.best_metric is None:
+            self.best_metric = self.ema_metric
+            return False
+
+        if self._is_improved(self.ema_metric, self.best_metric):
+            self.best_metric = self.ema_metric
+            self.num_bad_steps = 0
+            if self.cooldown_counter > 0:
+                self.cooldown_counter -= 1
+            return False
+
+        if self.cooldown_counter > 0:
+            self.cooldown_counter -= 1
+            return False
+
+        self.num_bad_steps += 1
+        if self.num_bad_steps >= self.patience:
+            reduced = self._reduce_lr(
+                reason=f"{self.patience} 옵티마이저 스텝 동안 EMA 지표 미개선",
+                cur_val=self.ema_metric,
+                best_val=self.best_metric,
+            )
+            self.best_metric = self.ema_metric
+            return reduced
+        return False
+
+    def observe_epoch_metric(self, metric: float) -> bool:
+        """에폭 종료 시 검증(또는 평균) 지표를 평가하여 미개선 시 학습률을 감쇠합니다."""
+        if self.epoch_patience <= 0 or not math.isfinite(metric):
+            return False
+
+        cur_val = float(metric)
+        if self.best_epoch_metric is None:
+            self.best_epoch_metric = cur_val
+            return False
+
+        if self._is_improved(cur_val, self.best_epoch_metric):
+            self.best_epoch_metric = cur_val
+            self.num_bad_epochs = 0
+            return False
+
+        self.num_bad_epochs += 1
+        if self.num_bad_epochs >= self.epoch_patience:
+            self.num_bad_epochs = 0
+            return self._reduce_lr(
+                reason=f"{self.epoch_patience} 에폭 연속 지표 미개선",
+                cur_val=cur_val,
+                best_val=self.best_epoch_metric,
+            )
+        return False
+
+    def state_dict(self) -> dict[str, Any]:
+        """스케줄러의 기본 상태와 정체 감지기 내부 상태를 딕셔너리로 직렬화합니다."""
+        return {
+            "last_epoch": self.last_epoch,
+            "plateau_scale": self.plateau_scale,
+            "ema_metric": self.ema_metric,
+            "best_metric": self.best_metric,
+            "num_bad_steps": self.num_bad_steps,
+            "cooldown_counter": self.cooldown_counter,
+            "best_epoch_metric": self.best_epoch_metric,
+            "num_bad_epochs": self.num_bad_epochs,
+            "num_reductions": self.num_reductions,
+        }
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """체크포인트에서 스케줄러 상태와 정체 감쇠 배율을 복원합니다."""
+        self.last_epoch = int(state_dict.get("last_epoch", self.last_epoch))
+        if "plateau_scale" in state_dict:
+            self.plateau_scale = float(state_dict["plateau_scale"])
+        self.ema_metric = state_dict.get("ema_metric")
+        self.best_metric = state_dict.get("best_metric")
+        self.num_bad_steps = int(state_dict.get("num_bad_steps", 0))
+        self.cooldown_counter = int(state_dict.get("cooldown_counter", 0))
+        self.best_epoch_metric = state_dict.get("best_epoch_metric")
+        self.num_bad_epochs = int(state_dict.get("num_bad_epochs", 0))
+        self.num_reductions = int(state_dict.get("num_reductions", 0))
+        self._apply_current_lrs()
+
+
 def build_warmup_cosine_scheduler(
     optimizer: torch.optim.Optimizer,
     total_updates: int,
     warmup_steps: int,
     min_lr_ratio: float = 0.1,
-) -> torch.optim.lr_scheduler.LambdaLR:
-    """선형 워밍업 이후 코사인 감쇠를 수행하는 학습률 스케줄러를 생성합니다."""
-    total_updates = max(1, total_updates)
-    warmup_steps = max(0, min(warmup_steps, total_updates - 1))
-
-    def _lr_lambda(step: int) -> float:
-        """현재 옵티마이저 스텝에 대한 학습률 배율을 계산합니다."""
-        if warmup_steps > 0 and step < warmup_steps:
-            return float(step + 1) / float(warmup_steps)
-        if total_updates <= warmup_steps:
-            return 1.0
-        progress = min(
-            1.0, float(step - warmup_steps) / float(total_updates - warmup_steps)
-        )
-        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
+    min_total_ratio: float = 0.02,
+    mode: str = "min",
+    patience: int = 2500,
+    epoch_patience: int = 1,
+    factor: float = 0.5,
+    threshold: float = 1e-3,
+    cooldown: int = 500,
+) -> WarmupCosinePlateauScheduler:
+    """선형 워밍업 이후 코사인 감쇠 및 손실/보상 정체 시 자동 학습률 감쇠를 수행하는 스케줄러를 생성합니다."""
+    return WarmupCosinePlateauScheduler(
+        optimizer=optimizer,
+        total_updates=total_updates,
+        warmup_steps=warmup_steps,
+        min_lr_ratio=min_lr_ratio,
+        min_total_ratio=min_total_ratio,
+        mode=mode,
+        patience=patience,
+        epoch_patience=epoch_patience,
+        factor=factor,
+        threshold=threshold,
+        cooldown=cooldown,
+    )
 
 
 def step_optimizer_with_clip(
@@ -217,8 +420,9 @@ def step_optimizer_with_clip(
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: torch.amp.GradScaler,
     grad_clip: float,
+    step_metric: Optional[float] = None,
 ) -> bool:
-    """GradScaler 언스케일링과 그래디언트 클리핑 후 옵티마이저 및 스케줄러 스텝을 안전하게 수행합니다."""
+    """GradScaler 언스케일링과 그래디언트 클리핑 후 옵티마이저 및 정체 감지 스케줄러 스텝을 안전하게 수행합니다."""
     if scaler.is_enabled():
         old_scale = scaler.get_scale()
         scaler.unscale_(optimizer)
@@ -233,5 +437,9 @@ def step_optimizer_with_clip(
 
     if stepped:
         scheduler.step()
+        if step_metric is not None and isinstance(
+            scheduler, WarmupCosinePlateauScheduler
+        ):
+            scheduler.observe_step_metric(step_metric)
     optimizer.zero_grad(set_to_none=True)
     return stepped
