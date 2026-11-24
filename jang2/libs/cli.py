@@ -147,6 +147,24 @@ def build_train_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-frames", type=int, default=16, help="데모 모드 시 샘플 프레임 수")
     parser.add_argument("--lr", type=float, default=1e-4, help="최대 학습률")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="AdamW weight decay")
+    parser.add_argument(
+        "--optim",
+        choices=("adamw", "adamw8bit", "paged_adamw8bit"),
+        default="adamw",
+        help="옵티마이저 선택: adamw(표준 32-bit), adamw8bit(8-bit), paged_adamw8bit(OOM 방지 페이징 8-bit)",
+    )
+    parser.add_argument(
+        "--use-8bit-adam",
+        "--8bit-adam",
+        dest="use_8bit_adam",
+        action="store_true",
+        help="VRAM 절약용 bitsandbytes PagedAdamW8bit 간편 활성화 플래그",
+    )
+    parser.add_argument(
+        "--bf16-weights",
+        action="store_true",
+        help="BF16 지원 GPU(L4/A100/RTX 40·50 등)에서 가중치·그래디언트를 BF16으로 유지해 VRAM 50%% 추가 절감",
+    )
     parser.add_argument("--warmup-steps", type=int, default=None, help="LR 워밍업 옵티마이저 스텝 수")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping norm")
     parser.add_argument("--cfg-dropout", type=float, default=0.1, help="CFG 조건 드롭아웃 확률")
@@ -208,6 +226,24 @@ def build_grpo_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-accum-steps", type=int, default=1, help="Gradient accumulation 프롬프트 수")
     parser.add_argument("--lr", type=float, default=1e-5, help="학습률")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="AdamW weight decay")
+    parser.add_argument(
+        "--optim",
+        choices=("adamw", "adamw8bit", "paged_adamw8bit"),
+        default="adamw",
+        help="옵티마이저 선택: adamw(표준 32-bit), adamw8bit(8-bit), paged_adamw8bit(OOM 방지 페이징 8-bit)",
+    )
+    parser.add_argument(
+        "--use-8bit-adam",
+        "--8bit-adam",
+        dest="use_8bit_adam",
+        action="store_true",
+        help="VRAM 절약용 bitsandbytes PagedAdamW8bit 간편 활성화 플래그",
+    )
+    parser.add_argument(
+        "--bf16-weights",
+        action="store_true",
+        help="BF16 지원 GPU에서 정책 모델 가중치·그래디언트를 BF16으로 유지해 VRAM 50%% 추가 절감",
+    )
     parser.add_argument("--warmup-steps", type=int, default=None, help="워밍업 스텝 수")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping norm")
     parser.add_argument("--no-amp", action="store_true", help="CUDA 혼합 정밀도 비활성화")

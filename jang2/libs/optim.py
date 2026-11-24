@@ -1,9 +1,13 @@
-"""Stage 1 지도학습과 Stage 2 GRPO 강화학습이 공유하는 최적화기·스케줄러·AMP 유틸리티 모듈."""
+"""Stage 1 지도학습과 Stage 2 GRPO 강화학습이 공유하는 최적화기·8-bit AdamW·스케줄러·AMP 유틸리티 모듈."""
 
 from __future__ import annotations
 
+import importlib.util
 import math
+import subprocess
+import sys
 from dataclasses import dataclass
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -32,6 +36,41 @@ def resolve_amp_context(device: torch.device, no_amp: bool = False) -> AMPContex
     return AMPContext(enabled=use_amp, dtype=amp_dtype, scaler=scaler)
 
 
+def apply_bf16_master_weights_if_supported(
+    model: nn.Module,
+    device: torch.device,
+    enabled: bool = False,
+    tag: str = "Train",
+) -> nn.Module:
+    """BF16 지원 CUDA GPU에서 요청 시 모델 마스터 가중치를 bfloat16으로 전환해 VRAM을 절감합니다."""
+    if not enabled:
+        return model.to(device)
+    if device.type == "cuda" and torch.cuda.is_bf16_supported():
+        print(f"[{tag}] BF16 마스터 가중치 모드 활성화 (가중치·그래디언트 VRAM 50% 절감)")
+        return model.to(device=device, dtype=torch.bfloat16)
+    print(
+        f"[{tag}] WARNING: 현재 디바이스({device})가 네이티브 BF16을 지원하지 않아 "
+        "수치 안정성을 위해 FP32 마스터 가중치를 유지합니다."
+    )
+    return model.to(device)
+
+
+def resolve_optim_type(
+    optim_arg: str,
+    use_8bit_adam: bool,
+    device: torch.device,
+    tag: str = "Train",
+) -> str:
+    """CLI 옵티마이저 인자와 디바이스 가용성을 조합하여 최종 옵티마이저 종류를 결정합니다."""
+    resolved = "paged_adamw8bit" if (use_8bit_adam and optim_arg == "adamw") else optim_arg
+    if resolved in ("adamw8bit", "paged_adamw8bit") and device.type != "cuda":
+        print(
+            f"[{tag}] WARNING: 8-bit AdamW({resolved})는 CUDA 전용이므로 CPU에서는 표준 AdamW로 대체합니다."
+        )
+        return "adamw"
+    return resolved
+
+
 def build_adamw_param_groups(model: nn.Module, weight_decay: float) -> list[dict]:
     """임베딩 및 1차원 정규화 가중치를 Weight Decay에서 제외한 AdamW 파라미터 그룹을 구성합니다."""
     no_decay_ids: set[int] = set()
@@ -54,6 +93,97 @@ def build_adamw_param_groups(model: nn.Module, weight_decay: float) -> list[dict
         {"params": decay_params, "weight_decay": weight_decay},
         {"params": no_decay_params, "weight_decay": 0.0},
     ]
+
+
+def build_optimizer(
+    model: nn.Module,
+    lr: float,
+    weight_decay: float,
+    optim_type: str = "adamw",
+    auto_install_bnb: bool = True,
+    tag: str = "Train",
+) -> torch.optim.Optimizer:
+    """지정된 종류('adamw', 'adamw8bit', 'paged_adamw8bit')에 맞는 최적화기를 생성해 반환합니다."""
+    param_groups = build_adamw_param_groups(model, weight_decay=weight_decay)
+    if optim_type == "adamw":
+        return torch.optim.AdamW(param_groups, lr=lr)
+
+    if optim_type not in ("adamw8bit", "paged_adamw8bit"):
+        raise ValueError(
+            f"지원하지 않는 optim_type입니다: {optim_type} "
+            "(지원: 'adamw', 'adamw8bit', 'paged_adamw8bit')"
+        )
+
+    if importlib.util.find_spec("bitsandbytes") is None:
+        if not auto_install_bnb:
+            raise RuntimeError(
+                f"{optim_type} 사용을 위해 bitsandbytes 패키지가 필요합니다: pip install bitsandbytes>=0.43.0"
+            )
+        print(f"[{tag}] bitsandbytes 미설치 감지 -> 자동 설치 중 (bitsandbytes>=0.43.0)...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "bitsandbytes>=0.43.0"],
+            check=True,
+        )
+
+    import bitsandbytes as bnb
+
+    opt_cls = (
+        bnb.optim.PagedAdamW8bit
+        if optim_type == "paged_adamw8bit"
+        else bnb.optim.AdamW8bit
+    )
+    print(f"[{tag}] VRAM 절약형 8-bit 옵티마이저 활성화: {opt_cls.__name__} (lr={lr:.2e})")
+    return opt_cls(param_groups, lr=lr)
+
+
+def _to_cpu_serializable(obj: Any) -> Any:
+    """페이징된 CUDA 텐서를 포함한 중첩 객체 내 모든 텐서를 표준 CPU 텐서로 복제합니다."""
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().clone()
+    if isinstance(obj, dict):
+        return {k: _to_cpu_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_cpu_serializable(x) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_to_cpu_serializable(x) for x in obj)
+    return obj
+
+
+def sanitize_optimizer_state_for_save(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """`torch.load(weights_only=True)` 및 PagedAdamW8bit 호환을 위해 상태를 표준 CPU 텐서로 직렬화합니다."""
+    return _to_cpu_serializable(state_dict)
+
+
+def load_optimizer_state_safely(
+    optimizer: torch.optim.Optimizer,
+    state_dict: Optional[dict[str, Any]],
+    saved_optim_type: Optional[str],
+    current_optim_type: str,
+    tag: str = "Train",
+) -> None:
+    """체크포인트 재개 시 32-bit/8-bit 옵티마이저 포맷 호환성을 확인하고 상태를 안전하게 복원합니다."""
+    if state_dict is None:
+        return
+    is_cur_8bit = "8bit" in current_optim_type
+    if saved_optim_type is not None:
+        is_saved_8bit = "8bit" in saved_optim_type
+    else:
+        sample_vals = next(iter(state_dict.get("state", {}).values()), {})
+        is_saved_8bit = isinstance(sample_vals, dict) and ("state1" in sample_vals)
+
+    if is_cur_8bit != is_saved_8bit:
+        print(
+            f"[{tag}] WARNING: 체크포인트 옵티마이저 포맷({'8-bit' if is_saved_8bit else '32-bit'})과 "
+            f"현재 설정({current_optim_type})이 달라 모멘텀 상태 복원을 건너뛰고 새 버퍼로 재개합니다."
+        )
+        return
+
+    try:
+        optimizer.load_state_dict(state_dict)
+    except Exception as exc:
+        print(
+            f"[{tag}] WARNING: 옵티마이저 상태 복원 실패({exc}) -> 새 옵티마이저 버퍼로 재개합니다."
+        )
 
 
 def build_warmup_cosine_scheduler(

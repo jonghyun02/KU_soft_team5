@@ -26,9 +26,13 @@ from libs.grpo_rollout import (
 from libs.model import EDarchModel, EDarchSequenceLogProbs
 from libs.optim import (
     AMPContext,
-    build_adamw_param_groups,
+    apply_bf16_master_weights_if_supported,
+    build_optimizer,
     build_warmup_cosine_scheduler,
+    load_optimizer_state_safely,
     resolve_amp_context,
+    resolve_optim_type,
+    sanitize_optimizer_state_for_save,
     step_optimizer_with_clip,
 )
 from libs.tokenizer import load_korean_tokenizer
@@ -299,7 +303,12 @@ def run_grpo_training(args: argparse.Namespace) -> None:
             ref_model = ref_model.to(device=ref_device)
         print(f"[GRPO] 기준 모델(ref_model) 준비 완료 (device={ref_device}, kl_coef={args.kl_coef})")
 
-    policy_model = policy_model.to(device)
+    policy_model = apply_bf16_master_weights_if_supported(
+        policy_model,
+        device=device,
+        enabled=bool(getattr(args, "bf16_weights", False)),
+        tag="GRPO",
+    )
     if args.grad_checkpointing:
         policy_model.set_gradient_checkpointing(True)
         print("[GRPO] 정책 모델 Gradient Checkpointing 활성화됨")
@@ -355,8 +364,19 @@ def run_grpo_training(args: argparse.Namespace) -> None:
         else max(1, int(total_updates * 0.05))
     )
 
-    param_groups = build_adamw_param_groups(policy_model, weight_decay=args.weight_decay)
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
+    optim_type = resolve_optim_type(
+        optim_arg=getattr(args, "optim", "adamw"),
+        use_8bit_adam=bool(getattr(args, "use_8bit_adam", False)),
+        device=device,
+        tag="GRPO",
+    )
+    optimizer = build_optimizer(
+        model=policy_model,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        optim_type=optim_type,
+        tag="GRPO",
+    )
     scheduler = build_warmup_cosine_scheduler(
         optimizer, total_updates=total_updates, warmup_steps=warmup_steps
     )
@@ -364,7 +384,13 @@ def run_grpo_training(args: argparse.Namespace) -> None:
 
     if resume_ckpt is not None:
         if "optimizer_state_dict" in resume_ckpt:
-            optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+            load_optimizer_state_safely(
+                optimizer=optimizer,
+                state_dict=resume_ckpt["optimizer_state_dict"],
+                saved_optim_type=resume_ckpt.get("optim_type"),
+                current_optim_type=optim_type,
+                tag="GRPO",
+            )
         if resume_ckpt.get("scheduler_state_dict") is not None:
             scheduler.load_state_dict(resume_ckpt["scheduler_state_dict"])
         if resume_ckpt.get("scaler_state_dict") is not None and amp.scaler.is_enabled():
@@ -636,11 +662,12 @@ def run_grpo_training(args: argparse.Namespace) -> None:
             "config": asdict(cfg),
             "stage": "grpo_stage2",
             "codec_type": codec_type,
+            "optim_type": optim_type,
             "rollout_cfg_coef": float(args.rollout_cfg_coef),
             "default_sim_bin": int(default_sim_bin),
             "best_val_reward": best_val_reward,
             "model_state_dict": policy_model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
+            "optimizer_state_dict": sanitize_optimizer_state_for_save(optimizer.state_dict()),
             "scheduler_state_dict": scheduler.state_dict(),
             "scaler_state_dict": amp.scaler.state_dict() if amp.scaler.is_enabled() else None,
             "epoch": epoch,

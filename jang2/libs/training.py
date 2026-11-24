@@ -17,9 +17,13 @@ from libs.env import atomic_torch_save, setup_device
 from libs.model import EDarchModel, adapt_EDarch_for_korean_vocab
 from libs.optim import (
     AMPContext,
-    build_adamw_param_groups,
+    apply_bf16_master_weights_if_supported,
+    build_optimizer,
     build_warmup_cosine_scheduler,
+    load_optimizer_state_safely,
     resolve_amp_context,
+    resolve_optim_type,
+    sanitize_optimizer_state_for_save,
     step_optimizer_with_clip,
 )
 
@@ -217,8 +221,10 @@ def run_sft_training(args: argparse.Namespace) -> None:
     seen_sim_bins: set[int] = set()
     saved_codec_state = None
     resume_opt_state = None
+    resume_optim_type = None
     resume_sched_state = None
     resume_scaler_state = None
+    use_bf16_weights = bool(getattr(args, "bf16_weights", False))
 
     if args.resume is not None:
         if not args.resume.exists():
@@ -228,7 +234,9 @@ def run_sft_training(args: argparse.Namespace) -> None:
         cfg = EDarchConfig.from_dict(resume_ckpt["config"])
         model = EDarchModel(cfg)
         model.load_state_dict(resume_ckpt["model_state_dict"])
-        model = model.to(device)
+        model = apply_bf16_master_weights_if_supported(
+            model, device=device, enabled=use_bf16_weights, tag="Train"
+        )
         start_epoch = int(resume_ckpt.get("epoch", 0)) + 1
         global_step = int(resume_ckpt.get("global_step", 0))
         best_val_loss = float(resume_ckpt.get("best_val_loss", float("inf")))
@@ -250,6 +258,7 @@ def run_sft_training(args: argparse.Namespace) -> None:
             )
         saved_codec_state = resume_ckpt.get("codec_state_dict")
         resume_opt_state = resume_ckpt.get("optimizer_state_dict")
+        resume_optim_type = resume_ckpt.get("optim_type")
         resume_sched_state = resume_ckpt.get("scheduler_state_dict")
         resume_scaler_state = resume_ckpt.get("scaler_state_dict")
         del resume_ckpt
@@ -270,14 +279,18 @@ def run_sft_training(args: argparse.Namespace) -> None:
         if args.ko_vocab_size is not None and args.ko_vocab_size != cfg.text_card:
             model = adapt_EDarch_for_korean_vocab(model, new_ko_vocab_size=args.ko_vocab_size)
             print(f"[Train] 사전학습 모델 한국어 어휘 어댑테이션 완료: text_card={cfg.text_card}")
-        model = model.to(device)
+        model = apply_bf16_master_weights_if_supported(
+            model, device=device, enabled=use_bf16_weights, tag="Train"
+        )
     else:
         cfg = EDarchConfig.from_preset(args.preset)
         if args.no_source_audio_loss:
             cfg.train_on_source_audio = False
         if args.ko_vocab_size is not None:
             cfg.text_card = args.ko_vocab_size
-        model = EDarchModel(cfg).to(device)
+        model = apply_bf16_master_weights_if_supported(
+            EDarchModel(cfg), device=device, enabled=use_bf16_weights, tag="Train"
+        )
 
     if args.grad_checkpointing:
         model.set_gradient_checkpointing(True)
@@ -352,15 +365,32 @@ def run_sft_training(args: argparse.Namespace) -> None:
         args.warmup_steps if args.warmup_steps is not None else max(1, int(total_updates * 0.05))
     )
 
-    param_groups = build_adamw_param_groups(model, weight_decay=args.weight_decay)
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
+    optim_type = resolve_optim_type(
+        optim_arg=getattr(args, "optim", "adamw"),
+        use_8bit_adam=bool(getattr(args, "use_8bit_adam", False)),
+        device=device,
+        tag="Train",
+    )
+    optimizer = build_optimizer(
+        model=model,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        optim_type=optim_type,
+        tag="Train",
+    )
     scheduler = build_warmup_cosine_scheduler(
         optimizer, total_updates=total_updates, warmup_steps=warmup_steps
     )
     amp = resolve_amp_context(device=device, no_amp=args.no_amp)
 
     if resume_opt_state is not None:
-        optimizer.load_state_dict(resume_opt_state)
+        load_optimizer_state_safely(
+            optimizer=optimizer,
+            state_dict=resume_opt_state,
+            saved_optim_type=resume_optim_type,
+            current_optim_type=optim_type,
+            tag="Train",
+        )
         del resume_opt_state
     if resume_sched_state is not None:
         scheduler.load_state_dict(resume_sched_state)
@@ -493,11 +523,12 @@ def run_sft_training(args: argparse.Namespace) -> None:
             "config": asdict(cfg),
             "stage": "sft_stage1",
             "codec_type": codec_type,
+            "optim_type": optim_type,
             "default_sim_bin": int(default_sim_bin),
             "seen_sim_bins": sorted(seen_sim_bins),
             "best_val_loss": best_val_loss,
             "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
+            "optimizer_state_dict": sanitize_optimizer_state_for_save(optimizer.state_dict()),
             "scheduler_state_dict": scheduler.state_dict(),
             "scaler_state_dict": amp.scaler.state_dict() if amp.scaler.is_enabled() else None,
             "epoch": epoch,
